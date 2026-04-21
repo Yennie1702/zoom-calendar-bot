@@ -1,0 +1,35 @@
+# Secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Google OAuth
+token.json
+credentials.json
+google_oauth.json
+*.pickle
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# SQLite data (chứa email khách + zoom passcode — tuyệt đối không leak lên Git)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

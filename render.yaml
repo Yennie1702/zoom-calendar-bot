@@ -1,0 +1,44 @@
+# Render Blueprint — JA Scheduler Bot
+# Deploy: Web Service trên Free tier.
+# Bot dùng Telegram long-polling nhưng Render Free bắt buộc bind $PORT,
+# nên bot/main.py chạy kèm HTTP health server (port = $PORT).
+services:
+  - type: web
+    name: ja-scheduler-bot
+    runtime: python
+    plan: free
+    region: singapore   # gần VN nhất trong các region free của Render
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Secrets — điền trong Render dashboard (sync=false → KHÔNG đọc từ file này)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_CHAT_ID
+        sync: false
+      - key: ZOOM_ACCOUNT_ID
+        sync: false
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CALENDAR_ACCOUNT
+        sync: false
+      - key: CONTACT_NAME
+        sync: false
+      - key: CONTACT_TITLE
+        sync: false
+      # Turso libSQL — persistent storage (0đ free tier)
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
