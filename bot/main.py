@@ -8,7 +8,6 @@ so we run a minimal HTTP health server alongside the long-polling bot.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
@@ -63,13 +62,6 @@ def main() -> None:
     log.info("  google_ready = %s", config.google_ready())
 
     _start_health_server()
-
-    # Python 3.14 removed the implicit main-thread event loop; PTB's
-    # run_polling() still calls asyncio.get_event_loop() internally.
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
