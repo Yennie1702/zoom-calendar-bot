@@ -204,17 +204,27 @@ def _edit_menu_keyboard(event_id: int, *, recurring: bool = False) -> InlineKeyb
 
 
 def _delete_confirm_keyboard(event_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Xoá thật", callback_data=f"del_yes:{event_id}"),
-        InlineKeyboardButton("❌ Huỷ", callback_data=f"back_det:{event_id}"),
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Xoá + gửi mail", callback_data=f"del_yes:{event_id}:n"),
+         InlineKeyboardButton("✅ Xoá (không mail)", callback_data=f"del_yes:{event_id}:s")],
+        [InlineKeyboardButton("❌ Huỷ", callback_data=f"back_det:{event_id}")],
+    ])
 
 
 def _edit_confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Xác nhận sửa", callback_data="ed_go"),
-        InlineKeyboardButton("❌ Huỷ", callback_data="ed_no"),
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sửa + gửi mail", callback_data="ed_go:n"),
+         InlineKeyboardButton("✅ Sửa (không mail)", callback_data="ed_go:s")],
+        [InlineKeyboardButton("❌ Huỷ", callback_data="ed_no")],
+    ])
+
+
+def _delete_occ_confirm_keyboard(event_id: int, idx: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Xoá + gửi mail", callback_data=f"del_occ_yes:{event_id}:{idx}:n"),
+         InlineKeyboardButton("✅ Xoá (không mail)", callback_data=f"del_occ_yes:{event_id}:{idx}:s")],
+        [InlineKeyboardButton("❌ Huỷ", callback_data=f"back_det:{event_id}")],
+    ])
 
 
 # ── Text handler: create-parse OR edit-value (depending on state) ─────────────
@@ -529,10 +539,11 @@ async def _handle_quick_edit(
             )
         await update.message.reply_text(
             f"🗑 Xoá lịch sau?\n\n{detail}{note}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Xoá thật", callback_data=f"del_all:{row.id}"),
-                InlineKeyboardButton("❌ Huỷ", callback_data="del_no"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Xoá + gửi mail", callback_data=f"del_all:{row.id}:n"),
+                 InlineKeyboardButton("✅ Xoá (không mail)", callback_data=f"del_all:{row.id}:s")],
+                [InlineKeyboardButton("❌ Huỷ", callback_data="del_no")],
+            ]),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
         )
@@ -734,8 +745,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
-        if data == "ed_go":
-            await _do_edit(update, ctx)
+        if data.startswith("ed_go:"):
+            notify = data.endswith(":n")
+            await _do_edit(update, ctx, notify=notify)
             return
         if data == "ed_no":
             pending = ctx.chat_data.pop("pending_edit", None)
@@ -755,11 +767,12 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             if row.recurring:
                 await query.edit_message_text(
                     f"🗑 Xoá lịch lặp *{row.topic}* (id={event_id}, "
-                    f"{row.recurring['count']} buổi)?\n"
-                    f"Khách sẽ nhận email huỷ tương ứng.",
+                    f"{row.recurring['count']} buổi)?",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("❌ Toàn bộ series",
-                                              callback_data=f"del_all:{event_id}")],
+                        [InlineKeyboardButton("❌ Toàn bộ + gửi mail",
+                                              callback_data=f"del_all:{event_id}:n")],
+                        [InlineKeyboardButton("❌ Toàn bộ (không mail)",
+                                              callback_data=f"del_all:{event_id}:s")],
                         [InlineKeyboardButton("⊘ Chỉ 1 buổi",
                                               callback_data=f"del_one:{event_id}")],
                         [InlineKeyboardButton("↩️ Quay lại",
@@ -777,9 +790,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         if data.startswith("del_yes:") or data.startswith("del_all:"):
-            event_id = int(data.split(":", 1)[1])
+            parts = data.split(":")
+            event_id = int(parts[1])
+            notify = len(parts) < 3 or parts[2] == "n"
             ctx.chat_data.pop("pending_delete", None)
-            await _do_delete(query, event_id)
+            await _do_delete(query, event_id, notify=notify)
             return
 
         if data == "del_no":
@@ -855,14 +870,34 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             await _show_occurrence_picker(query, ctx, event_id, action="xoá")
             return
 
-        if data.startswith("del_occ_go:"):
+        if data.startswith("del_occ_ask:"):
             _, eid, idx = data.split(":", 2)
             event_id, i = int(eid), int(idx)
             occs = ctx.chat_data.get("occurrences", {}).get(event_id)
             if not occs or i >= len(occs):
                 await query.edit_message_text("⚠️ Danh sách đã cũ. Gõ /list làm lại.")
                 return
-            await _do_delete_occurrence(query, event_id, occs[i])
+            row = db.get_event(event_id)
+            if not row:
+                await query.edit_message_text("⚠️ Lịch không tồn tại.")
+                return
+            date_str = formatter.format_occurrence_date(occs[i])
+            await query.edit_message_text(
+                f"🗑 Xoá buổi *{date_str}* trong lịch lặp *{row.topic}*?",
+                reply_markup=_delete_occ_confirm_keyboard(event_id, i),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data.startswith("del_occ_yes:"):
+            parts = data.split(":")
+            event_id, i = int(parts[1]), int(parts[2])
+            notify = parts[3] == "n" if len(parts) > 3 else True
+            occs = ctx.chat_data.get("occurrences", {}).get(event_id)
+            if not occs or i >= len(occs):
+                await query.edit_message_text("⚠️ Danh sách đã cũ. Gõ /list làm lại.")
+                return
+            await _do_delete_occurrence(query, event_id, occs[i], notify=notify)
             return
 
         log.warning("Unknown callback: %s", data)
@@ -951,7 +986,9 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── Action: edit ───────────────────────────────────────────────────────────────
-async def _do_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _do_edit(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, *, notify: bool = True
+) -> None:
     query = update.callback_query
     pending = ctx.chat_data.get("pending_edit")
     if pending is None:
@@ -968,19 +1005,20 @@ async def _do_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     occ_idx = pending.get("occurrence_idx")
-    await query.edit_message_text("⏳ Đang apply thay đổi lên Zoom + Calendar…")
+    mail_note = "Khách sẽ nhận email cập nhật." if notify else "Không gửi email cho khách."
+    await query.edit_message_text(f"⏳ Đang apply thay đổi lên Zoom + Calendar… ({mail_note})")
     try:
         if occ_idx is not None:
             occs = ctx.chat_data.get("occurrences", {}).get(event_id, [])
             if occ_idx >= len(occs):
                 raise RuntimeError("Danh sách buổi đã cũ, gõ /list làm lại.")
-            _apply_occurrence_edit(row, occs[occ_idx], field, new_value)
+            _apply_occurrence_edit(row, occs[occ_idx], field, new_value, notify=notify)
         else:
-            _apply_edit(row, field, new_value)
+            _apply_edit(row, field, new_value, notify=notify)
         ctx.chat_data.pop("pending_edit", None)
         updated = db.get_event(event_id)
         await query.edit_message_text(
-            "✅ Đã cập nhật.\n\n" + formatter.format_event_detail(updated),
+            f"✅ Đã cập nhật. {mail_note}\n\n" + formatter.format_event_detail(updated),
             reply_markup=_detail_keyboard(event_id),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
@@ -992,7 +1030,7 @@ async def _do_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
-def _apply_edit(row: db.EventRow, field: str, new_value) -> None:
+def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True) -> None:
     """Sync one field across Zoom, Google Calendar, and local DB."""
     # Compute the "after" state we need for side effects
     topic = row.topic
@@ -1051,6 +1089,7 @@ def _apply_edit(row: db.EventRow, field: str, new_value) -> None:
         start_local_iso=start_local if field in ("time", "dur") else None,
         end_local_iso=end_dt.isoformat(timespec="seconds") if field in ("time", "dur") else None,
         attendee_emails=attendees if field in ("att_add", "att_rm") else None,
+        notify=notify,
     )
 
     # DB
@@ -1069,23 +1108,24 @@ def _apply_edit(row: db.EventRow, field: str, new_value) -> None:
 
 
 # ── Action: delete ─────────────────────────────────────────────────────────────
-async def _do_delete(query, event_id: int) -> None:
+async def _do_delete(query, event_id: int, *, notify: bool = True) -> None:
     row = db.get_event(event_id)
     if row is None or row.status != "active":
         await query.edit_message_text("⚠️ Lịch này không còn.")
         return
-    await query.edit_message_text("⏳ Đang xoá Zoom + Calendar…")
+    mail_note = "Khách đã nhận email huỷ." if notify else "Không gửi email cho khách."
+    await query.edit_message_text(f"⏳ Đang xoá Zoom + Calendar… ({mail_note})")
     try:
         _zoom.delete_meeting(row.zoom_meeting_id)
     except Exception:
         log.exception("Zoom delete failed (soft-continuing)")
     try:
-        _get_calendar().delete_event(row.calendar_event_id)
+        _get_calendar().delete_event(row.calendar_event_id, notify=notify)
     except Exception:
         log.exception("Calendar delete failed (soft-continuing)")
     db.mark_deleted(event_id)
     await query.edit_message_text(
-        f"🗑 Đã xoá lịch *{row.topic}* (id={event_id}). Khách đã nhận email huỷ.",
+        f"🗑 Đã xoá lịch *{row.topic}* (id={event_id}). {mail_note}",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("↩️ Quay lại list", callback_data="back_list")]]
         ),
@@ -1095,7 +1135,7 @@ async def _do_delete(query, event_id: int) -> None:
 
 # ── Single-occurrence apply (recurring series) ────────────────────────────────
 def _apply_occurrence_edit(
-    row: db.EventRow, occ: dict, field: str, new_value
+    row: db.EventRow, occ: dict, field: str, new_value, *, notify: bool = True
 ) -> None:
     """Edit time OR duration of one buổi in a recurring series."""
     orig_start = datetime.fromisoformat(occ["start_local"])
@@ -1127,6 +1167,7 @@ def _apply_occurrence_edit(
             occ["cal_instance_id"],
             start_local_iso=start_iso if field in ("time", "dur") else None,
             end_local_iso=end_iso,
+            notify=notify,
         )
 
 
@@ -1150,7 +1191,7 @@ async def _show_occurrence_picker(
         return
     ctx.chat_data.setdefault("occurrences", {})[event_id] = occs
 
-    prefix = "del_occ_go" if action == "xoá" else "ed_occ_sel"
+    prefix = "del_occ_ask" if action == "xoá" else "ed_occ_sel"
     text = formatter.format_occurrence_list(row, occs, action)
     await query.edit_message_text(
         text,
@@ -1159,12 +1200,15 @@ async def _show_occurrence_picker(
     )
 
 
-async def _do_delete_occurrence(query, event_id: int, occ: dict) -> None:
+async def _do_delete_occurrence(
+    query, event_id: int, occ: dict, *, notify: bool = True
+) -> None:
     row = db.get_event(event_id)
     if not row:
         await query.edit_message_text("⚠️ Lịch không tồn tại.")
         return
-    await query.edit_message_text("⏳ Đang huỷ 1 buổi trên Zoom + Calendar…")
+    mail_note = "Khách đã nhận email huỷ buổi." if notify else "Không gửi email cho khách."
+    await query.edit_message_text(f"⏳ Đang huỷ 1 buổi trên Zoom + Calendar… ({mail_note})")
     try:
         if occ["zoom_occ_id"]:
             try:
@@ -1173,14 +1217,14 @@ async def _do_delete_occurrence(query, event_id: int, occ: dict) -> None:
                 log.exception("Zoom occurrence delete failed")
         if occ["cal_instance_id"]:
             try:
-                _get_calendar().cancel_instance(occ["cal_instance_id"])
+                _get_calendar().cancel_instance(occ["cal_instance_id"], notify=notify)
             except Exception:
                 log.exception("Calendar instance cancel failed")
         db.add_cancelled_occurrence(event_id, occ["start_local"])
         date_str = formatter.format_occurrence_date(occ)
         await query.edit_message_text(
             f"✅ Đã huỷ buổi *{date_str}* trong lịch lặp *{row.topic}*. "
-            f"Các buổi còn lại giữ nguyên.",
+            f"{mail_note}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("↩️ Quay lại lịch",
                                       callback_data=f"back_det:{event_id}")],

@@ -106,6 +106,7 @@ class CalendarClient:
         attendee_emails: list[str] | None = None,
         rrule: str | None = None,
         clear_recurrence: bool = False,
+        notify: bool = True,
     ) -> CalendarEvent:
         """PATCH a Calendar event. Only pass fields you want to change.
 
@@ -135,26 +136,28 @@ class CalendarClient:
                 calendarId=cal,
                 eventId=event_id,
                 body=body,
-                sendUpdates="all",
+                sendUpdates="all" if notify else "none",
                 conferenceDataVersion=0,
             )
             .execute()
         )
-        log.info("Patched Calendar event %s on %s", resp["id"], cal)
+        log.info("Patched Calendar event %s on %s (notify=%s)", resp["id"], cal, notify)
         return CalendarEvent(
             event_id=resp["id"],
             html_link=resp.get("htmlLink", ""),
             calendar_id=cal,
         )
 
-    def delete_event(self, event_id: str, *, calendar_id: str | None = None) -> None:
+    def delete_event(
+        self, event_id: str, *, calendar_id: str | None = None, notify: bool = True
+    ) -> None:
         cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
         self._service.events().delete(
             calendarId=cal,
             eventId=event_id,
-            sendUpdates="all",
+            sendUpdates="all" if notify else "none",
         ).execute()
-        log.info("Deleted Calendar event %s on %s", event_id, cal)
+        log.info("Deleted Calendar event %s on %s (notify=%s)", event_id, cal, notify)
 
     def get_event(
         self, event_id: str, *, calendar_id: str | None = None
@@ -188,7 +191,11 @@ class CalendarClient:
         return resp.get("items", [])
 
     def cancel_instance(
-        self, instance_id: str, *, calendar_id: str | None = None
+        self,
+        instance_id: str,
+        *,
+        calendar_id: str | None = None,
+        notify: bool = True,
     ) -> None:
         """Cancel a single occurrence of a recurring series."""
         cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
@@ -196,9 +203,9 @@ class CalendarClient:
             calendarId=cal,
             eventId=instance_id,
             body={"status": "cancelled"},
-            sendUpdates="all",
+            sendUpdates="all" if notify else "none",
         ).execute()
-        log.info("Cancelled Calendar instance %s on %s", instance_id, cal)
+        log.info("Cancelled Calendar instance %s on %s (notify=%s)", instance_id, cal, notify)
 
     def patch_instance(
         self,
@@ -207,6 +214,7 @@ class CalendarClient:
         calendar_id: str | None = None,
         start_local_iso: str | None = None,
         end_local_iso: str | None = None,
+        notify: bool = True,
     ) -> None:
         """PATCH a single occurrence's start/end (dời buổi riêng)."""
         cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
@@ -221,6 +229,6 @@ class CalendarClient:
             calendarId=cal,
             eventId=instance_id,
             body=body,
-            sendUpdates="all",
+            sendUpdates="all" if notify else "none",
         ).execute()
-        log.info("Patched Calendar instance %s on %s", instance_id, cal)
+        log.info("Patched Calendar instance %s on %s (notify=%s)", instance_id, cal, notify)
