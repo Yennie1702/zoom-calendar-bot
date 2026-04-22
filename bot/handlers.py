@@ -50,19 +50,43 @@ def _get_calendar() -> CalendarClient:
 
 
 # ── Authorization gate ─────────────────────────────────────────────────────────
+def _log_incoming(update: Update) -> None:
+    """Dump identity of every incoming update so we can diagnose chat_id mismatches."""
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+    log.info(
+        "INCOMING chat_id=%s type=%s title=%r user_id=%s username=%s text=%r",
+        chat.id if chat else None,
+        chat.type if chat else None,
+        chat.title if chat else None,
+        user.id if user else None,
+        user.username if user else None,
+        (msg.text[:80] if msg and msg.text else None),
+    )
+
+
 def _is_allowed(update: Update) -> bool:
+    _log_incoming(update)
     chat = update.effective_chat
     return chat is not None and chat.id == config.TELEGRAM_ALLOWED_CHAT_ID
 
 
 async def _reject(update: Update) -> None:
-    log.warning("Rejected message from unauthorized chat_id=%s user=%s",
-                update.effective_chat.id if update.effective_chat else "?",
-                update.effective_user.username if update.effective_user else "?")
-    if update.message:
-        await update.message.reply_text(
-            "❌ Bot này chỉ phục vụ chị Hải Yến. Tin nhắn của bạn đã bị từ chối."
-        )
+    """Silently drop unauthorized updates — do NOT reply into those chats.
+
+    Replying was noisy (bot spammed '❌ Bot này chỉ phục vụ...' into any chat
+    where it was added). Rejection now is log-only; debug via Render logs.
+    """
+    chat = update.effective_chat
+    log.warning(
+        "REJECTED chat_id=%s type=%s title=%r user=%s — expected ALLOWED_CHAT_ID=%s",
+        chat.id if chat else None,
+        chat.type if chat else None,
+        chat.title if chat else None,
+        update.effective_user.username if update.effective_user else None,
+        config.TELEGRAM_ALLOWED_CHAT_ID,
+    )
 
 
 # ── /start, /help ──────────────────────────────────────────────────────────────
