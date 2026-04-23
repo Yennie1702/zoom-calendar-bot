@@ -96,112 +96,130 @@ async def _reject(update: Update) -> None:
 
 
 # ── /start, /help ──────────────────────────────────────────────────────────────
-_HELP_TEXT = (
-    "📖 *JA Scheduler Bot — Hướng dẫn dùng*\n\n"
+def _pre(s: str) -> str:
+    return f"<pre>{_escape(s)}</pre>"
 
-    "🆕 *TẠO LỊCH MỚI*\n"
-    "_One-time:_\n"
-    "```\n"
-    "Tạo lịch \"Tư vấn OKRs - Chị Lan\":\n"
-    "- Thời gian: 22/4/2026 14:00\n"
-    "- Thời lượng: 30 phút\n"
-    "- Nội dung: Tư vấn gói Coaching OKRs\n"
-    "- Khách: lan@abc.com\n"
-    "```\n"
-    "_Recurring (hàng tuần):_\n"
-    "```\n"
-    "Tạo lịch \"Mentor MBOs 42\":\n"
-    "- Thời gian: 8h30 sáng thứ 4 hàng tuần trong 12 tuần liên tiếp bắt đầu từ 20/5/2026\n"
-    "- Thời lượng: 120 phút\n"
-    "- Nội dung: Chương trình Mentor MBOs\n"
-    "- Mời khách: a@x.vn, b@y.vn\n"
-    "```\n"
+
+def _code(s: str) -> str:
+    return f"<code>{_escape(s)}</code>"
+
+
+def _escape(s: str) -> str:
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+_HELP_TEXT = (
+    "📖 <b>JA Scheduler Bot — Hướng dẫn dùng</b>\n\n"
+
+    "🆕 <b>TẠO LỊCH MỚI</b>\n"
+    "<i>One-time:</i>\n"
+    + _pre(
+        'Tạo lịch "Tư vấn OKRs - Chị Lan":\n'
+        "- Thời gian: 22/4/2026 14:00\n"
+        "- Thời lượng: 30 phút\n"
+        "- Nội dung: Tư vấn gói Coaching OKRs\n"
+        "- Khách: lan@abc.com"
+    ) + "\n"
+    "<i>Recurring (hàng tuần):</i>\n"
+    + _pre(
+        'Tạo lịch "Mentor MBOs 42":\n'
+        "- Thời gian: 8h30 sáng thứ 4 hàng tuần trong 12 tuần liên tiếp bắt đầu từ 20/5/2026\n"
+        "- Thời lượng: 120 phút\n"
+        "- Nội dung: Chương trình Mentor MBOs\n"
+        "- Mời khách: a@x.vn, b@y.vn"
+    ) + "\n"
     "Bot parse → preview → bấm ✅ để tạo thật.\n\n"
 
-    "⚡ *SỬA NHANH — LỊCH MỚI NHẤT*\n"
+    "⚡ <b>SỬA NHANH — LỊCH MỚI NHẤT</b>\n"
     "Nhắn thẳng (không cần format):\n"
-    "```\n"
-    "sửa giờ 15h30\n"
-    "sửa giờ 15h30 25/4/2026\n"
-    "sửa thời lượng 45 phút\n"
-    "sửa tên Tư vấn OKRs v2\n"
-    "sửa nội dung Nội dung mới\n"
-    "thêm khách a@x.vn, b@y.vn\n"
-    "bỏ khách a@x.vn\n"
-    "xoá lịch\n"
-    "```\n"
-    "Target lịch khác: thêm `#id` (lấy từ /list), VD: `sửa giờ 15h #5`\n\n"
+    + _pre(
+        "sửa giờ 15h30\n"
+        "sửa giờ 15h30 25/4/2026\n"
+        "sửa thời lượng 45 phút\n"
+        "sửa tên Tư vấn OKRs v2\n"
+        "sửa nội dung Nội dung mới\n"
+        "thêm khách a@x.vn, b@y.vn\n"
+        "bỏ khách a@x.vn\n"
+        "xoá lịch"
+    ) + "\n"
+    "Target lịch khác: thêm " + _code("#id") + " (lấy từ /list), VD: "
+    + _code("sửa giờ 15h #5") + "\n\n"
 
-    "🔍 *SỬA/XOÁ LỊCH CŨ BẰNG TÊN* (không cần nhớ id)\n"
-    "```\n"
-    "sửa giờ 15h30 \"Tư vấn OKRs\" ngày 25/4\n"
-    "xoá lịch \"Tư vấn OKRs\" ngày 25/4\n"
-    "xoá lịch khách lan@abc.com\n"
-    "sửa thời lượng 45 phút \"Mentor MBOs\"\n"
-    "```\n"
+    "🔍 <b>SỬA/XOÁ LỊCH CŨ BẰNG TÊN</b> (không cần nhớ id)\n"
+    + _pre(
+        'sửa giờ 15h30 "Tư vấn OKRs" ngày 25/4\n'
+        'xoá lịch "Tư vấn OKRs" ngày 25/4\n'
+        "xoá lịch khách lan@abc.com\n"
+        'sửa thời lượng 45 phút "Mentor MBOs"'
+    ) + "\n"
     "Nhiều lịch khớp → bot hiện list để chị bấm số chọn.\n\n"
 
-    "📑 *CLONE LỊCH CŨ* (copy nhanh rồi chỉnh)\n"
-    "```\n"
-    "tạo lịch giống #5\n"
-    "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
-    "tạo lịch giống \"Tư vấn OKRs\" nhưng ngày mai, khách a@x.vn\n"
-    "tạo lịch giống #3 nhưng tên \"OKRs v2\", thêm khách b@y.vn\n"
-    "```\n\n"
+    "📑 <b>CLONE LỊCH CŨ</b> (copy nhanh rồi chỉnh)\n"
+    + _pre(
+        "tạo lịch giống #5\n"
+        "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
+        'tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách a@x.vn\n'
+        'tạo lịch giống #3 nhưng tên "OKRs v2", thêm khách b@y.vn'
+    ) + "\n\n"
 
-    "⚠️ *CẢNH BÁO TRÙNG LỊCH*\n"
+    "⚠️ <b>CẢNH BÁO TRÙNG LỊCH</b>\n"
     "Khi tạo / clone / đổi giờ, nếu overlap với lịch khác, bot cảnh báo ngay trong preview. "
     "Chị vẫn confirm được nếu cố ý trùng.\n\n"
 
-    "📧 *GỬI EMAIL CHO KHÁCH HAY KHÔNG*\n"
+    "📧 <b>GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>\n"
     "Mỗi lần confirm sửa / xoá, bot hiện 2 lựa chọn:\n"
-    "• *✅ Sửa + gửi mail* / *✅ Xoá + gửi mail* — Google Calendar gửi email update/huỷ cho tất cả khách.\n"
-    "• *✅ Sửa (không mail)* / *✅ Xoá (không mail)* — update/huỷ âm thầm, khách không nhận email.\n"
+    "• <b>✅ Sửa + gửi mail</b> / <b>✅ Xoá + gửi mail</b> — Google Calendar gửi email update/huỷ cho tất cả khách.\n"
+    "• <b>✅ Sửa (không mail)</b> / <b>✅ Xoá (không mail)</b> — update/huỷ âm thầm, khách không nhận email.\n"
     "Áp dụng cho cả sửa/xoá toàn bộ lịch, 1 buổi riêng của lịch lặp, và xoá toàn bộ series.\n\n"
 
-    "⏰ *NHẮC LỊCH & DIGEST TỰ ĐỘNG*\n"
+    "⏰ <b>NHẮC LỊCH &amp; DIGEST TỰ ĐỘNG</b>\n"
     "• Nhắc ~30 phút trước mỗi lịch (cả buổi lặp) — gửi vào chat này.\n"
     "• 07:00 sáng: digest tất cả lịch trong ngày.\n"
-    "• /today — xem agenda hôm nay bất kỳ lúc nào.\n\n"
+    "• /today — xem agenda hôm nay bất kỳ lúc nào.\n"
+    "• Digest + /list + nhắc giờ thấy <b>cả lịch Calendar không do bot tạo</b> (hiển thị 📅, view-only).\n\n"
 
-    "📋 *QUẢN LÝ ĐẦY ĐỦ — /list*\n"
+    "📋 <b>QUẢN LÝ ĐẦY ĐỦ — /list</b>\n"
     "• Hiện 10 lịch gần nhất, mỗi lịch 1 nút số\n"
     "• Bấm số → chi tiết + nút ✏️ Sửa / 🗑 Xoá\n"
     "• ✏️ → menu 6 field: giờ/ngày · thời lượng · thêm/bỏ khách · tên · nội dung\n"
     "• 🗑 → confirm → huỷ Zoom + Calendar (khách nhận email huỷ)\n\n"
 
-    "🔎 *Tìm & lật trang trong /list:*\n"
-    "```\n"
-    "/list 2                  ← trang 2 (10 lịch/trang)\n"
-    "/list OKRs               ← lọc theo từ khoá tên/nội dung\n"
-    "/list khách lan@abc.com  ← lọc theo email khách\n"
-    "/list tuần này\n"
-    "/list tuần sau | tuần trước\n"
-    "/list hôm nay | mai | hôm qua\n"
-    "/list tháng này | tháng 5 | tháng 5/2026\n"
-    "/list 27/4               ← ngày cụ thể\n"
-    "/list 27/4-4/5           ← khoảng ngày\n"
-    "/list OKRs 2             ← từ khoá + trang\n"
-    "```\n\n"
+    "🔎 <b>Tìm &amp; lật trang trong /list:</b>\n"
+    + _pre(
+        "/list 2                  ← trang 2 (10 lịch/trang)\n"
+        "/list OKRs               ← lọc theo từ khoá tên/nội dung\n"
+        "/list khách lan@abc.com  ← lọc theo email khách\n"
+        "/list tuần này\n"
+        "/list tuần sau | tuần trước\n"
+        "/list hôm nay | mai | hôm qua\n"
+        "/list tháng này | tháng 5 | tháng 5/2026\n"
+        "/list 27/4               ← ngày cụ thể\n"
+        "/list 27/4-4/5           ← khoảng ngày\n"
+        "/list OKRs 2             ← từ khoá + trang"
+    ) + "\n\n"
 
-    "🔁 *LỊCH LẶP — XOÁ / SỬA 1 BUỔI RIÊNG*\n"
+    "🔁 <b>LỊCH LẶP — XOÁ / SỬA 1 BUỔI RIÊNG</b>\n"
     "• Xoá 1 buổi: /list → lịch lặp → 🗑 → \"⦿ Chỉ 1 buổi\" → chọn buổi\n"
     "• Sửa 1 buổi: /list → lịch lặp → ✏️ → \"📝 Sửa 1 buổi riêng\" → chọn buổi → Giờ/Thời lượng\n\n"
 
-    "📅 *KÉO THẢ THỦ CÔNG TRÊN GOOGLE CALENDAR*\n"
+    "📅 <b>KÉO THẢ THỦ CÔNG TRÊN GOOGLE CALENDAR</b>\n"
     "Chị cứ kéo thoải mái trên Calendar UI. Sau đó đồng bộ:\n"
-    "• `/sync` → đồng bộ lịch mới nhất\n"
-    "• `/sync 5` → đồng bộ lịch id=5\n"
-    "• Hoặc /list → bấm lịch: nếu có drift sẽ có banner ⚠️ + nút 🔄 Sync\n\n"
+    "• " + _code("/sync") + " → đồng bộ lịch mới nhất\n"
+    "• " + _code("/sync 5") + " → đồng bộ lịch id=5\n"
+    "• Hoặc /list → bấm lịch: nếu có drift sẽ có banner ⚠️ + nút 🔄 Sync\n"
     "Bot coi Calendar là nguồn đúng, update Zoom + DB theo.\n\n"
 
-    "📌 *LỆNH TỔNG HỢP*\n"
+    "📌 <b>LỆNH TỔNG HỢP</b>\n"
     "• /start, /help — hướng dẫn\n"
     "• /list — quản lý 10 lịch gần nhất\n"
-    "• /sync \\[id] — đồng bộ sau khi kéo thả\n"
+    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả\n"
     "• /today — digest lịch hôm nay\n\n"
 
-    "⚠️ *Lưu ý*\n"
+    "⚠️ <b>Lưu ý</b>\n"
     "• Chỉ chị Hải Yến nhắn được (chat_id filter).\n"
     "• Lịch lặp: /sync chỉ đồng bộ cấp series. Kéo 1 instance riêng trên Calendar → dùng luồng \"Sửa 1 buổi riêng\" qua /list."
 )
@@ -211,14 +229,18 @@ async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await _reject(update)
         return
-    await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        _HELP_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    )
 
 
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await _reject(update)
         return
-    await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        _HELP_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    )
 
 
 async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
