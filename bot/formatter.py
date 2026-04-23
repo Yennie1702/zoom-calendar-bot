@@ -65,6 +65,32 @@ def format_calendar_description(
     )
 
 
+def format_personal_calendar_description(*, cmd: ParsedCommand, meet_link: str) -> str:
+    """Calendar description cho lịch HY cá nhân (không ghi tên JA, không có Zoom)."""
+    if cmd.recurring:
+        weekday_vi = _WEEKDAY_BYDAY_TO_VI[cmd.recurring["byday"]]
+        end_date = cmd.start + timedelta(weeks=cmd.recurring["count"] - 1)
+        time_line = (
+            f"{_fmt_time_range(cmd.start, cmd.duration_min)}, "
+            f"{weekday_vi} hàng tuần ({cmd.recurring['count']} buổi: "
+            f"{cmd.start.day}/{cmd.start.month}/{cmd.start.year} → "
+            f"{end_date.day}/{end_date.month}/{end_date.year})"
+        )
+        duration_line = f"{cmd.duration_min} phút/buổi"
+    else:
+        time_line = f"{_fmt_time_range(cmd.start, cmd.duration_min)}, {_fmt_date(cmd.start)}"
+        duration_line = f"{cmd.duration_min} phút"
+
+    agenda = cmd.agenda or cmd.topic
+    link_line = f"\n🔗 Google Meet: {meet_link}" if meet_link else ""
+    return (
+        f"📅 Thời gian: {time_line}\n"
+        f"⏱️ Thời lượng: {duration_line}\n"
+        f"🎯 Nội dung: {agenda}"
+        f"{link_line}"
+    )
+
+
 def format_confirm_preview(cmd: ParsedCommand) -> str:
     """Preview message sent to chị Yến before creating the meeting."""
     if cmd.recurring:
@@ -87,14 +113,63 @@ def format_confirm_preview(cmd: ParsedCommand) -> str:
         if cmd.attendees
         else "  (chưa có khách — chỉ tạo lịch trên calendar chị)"
     )
+    if cmd.is_personal:
+        header = (
+            "🔒 *Lịch HY cá nhân* — em hiểu như sau:\n"
+            "_Google Meet auto-gen · visibility: private · không Zoom_\n\n"
+        )
+    else:
+        header = "📋 Em hiểu lệnh như sau, chị xác nhận giúp em:\n\n"
 
     return (
-        "📋 Em hiểu lệnh như sau, chị xác nhận giúp em:\n\n"
-        f"🏷 *Tên:* {cmd.topic}\n"
-        f"📅 *Thời gian:* {time_line} ({cmd.duration_min} phút)\n"
-        f"{recur_line}"
-        f"🎯 *Nội dung:* {cmd.agenda or '(không)'}\n"
-        f"👥 *Khách mời* ({len(cmd.attendees)} người):\n{attendees}"
+        header
+        + f"🏷 *Tên:* {cmd.topic}\n"
+        + f"📅 *Thời gian:* {time_line} ({cmd.duration_min} phút)\n"
+        + f"{recur_line}"
+        + f"🎯 *Nội dung:* {cmd.agenda or '(không)'}\n"
+        + f"👥 *Khách mời* ({len(cmd.attendees)} người):\n{attendees}"
+    )
+
+
+def format_personal_success_reply(
+    *,
+    cmd: ParsedCommand,
+    meet_link: str,
+    calendar_event_link: str,
+) -> str:
+    """Success reply cho lịch HY cá nhân (Meet, private, không Zoom)."""
+    if cmd.recurring:
+        from datetime import timedelta as td
+        occ_lines = []
+        for i in range(cmd.recurring["count"]):
+            d = cmd.start + td(weeks=i)
+            occ_lines.append(f"  • {d.day}/{d.month}/{d.year}")
+        time_summary = (
+            f"🔁 Recurring {cmd.recurring['count']} buổi "
+            f"({_WEEKDAY_BYDAY_TO_VI[cmd.recurring['byday']]} hàng tuần):\n"
+            + "\n".join(occ_lines) + "\n"
+        )
+    else:
+        time_summary = (
+            f"📅 {_fmt_date(cmd.start)}, "
+            f"{_fmt_time_range(cmd.start, cmd.duration_min)}\n"
+        )
+    attendee_block = (
+        "\n".join(f"  • {e}" for e in cmd.attendees)
+        if cmd.attendees else "  (chỉ mình chị)"
+    )
+    meet_line = (
+        f"🔗 *Google Meet:*\n{meet_link}\n\n" if meet_link
+        else "_(Meet link sẽ xuất hiện trên Calendar sau vài giây.)_\n\n"
+    )
+    return (
+        f"🔒 Đã tạo lịch HY: *{cmd.topic}*\n"
+        f"_Visibility: private · không Zoom · không JA branding_\n\n"
+        f"{time_summary}"
+        f"⏱ {cmd.duration_min} phút/buổi\n\n"
+        f"{meet_line}"
+        f"👥 *Khách mời:*\n{attendee_block}\n\n"
+        f"🗓 [Mở Calendar event]({calendar_event_link})"
     )
 
 
@@ -147,6 +222,7 @@ def event_to_parsed(row: EventRow) -> ParsedCommand:
         agenda=row.agenda,
         attendees=list(row.attendees),
         recurring=row.recurring,
+        is_personal=(row.provider == "meet"),
     )
 
 
@@ -154,9 +230,10 @@ def format_event_summary(row: EventRow) -> str:
     """One-line label for the /list buttons."""
     d = row.start_dt
     tag = "🔁" if row.recurring else "📅"
+    hy = "🔒 " if row.provider == "meet" else ""
     date = f"{d.day}/{d.month} {d.hour:02d}:{d.minute:02d}"
     topic = row.topic if len(row.topic) <= 32 else row.topic[:30] + "…"
-    return f"{tag} {date} · {topic}"
+    return f"{tag} {date} · {hy}{topic}"
 
 
 def format_list(
@@ -253,13 +330,26 @@ def format_event_detail(row: EventRow) -> str:
         "\n".join(f"  • {e}" for e in row.attendees) if row.attendees else "  (không)"
     )
     status_tag = "" if row.status == "active" else f"\n⚠️ *Status:* {row.status}"
+    is_hy = row.provider == "meet"
+    title_prefix = "🔒 " if is_hy else ""
+    hy_tag = "\n_🔒 Lịch HY cá nhân · private · Meet_" if is_hy else ""
+    if is_hy:
+        link_line = (
+            f"🔗 [Meet]({row.meet_join_url})  |  🗓 [Calendar]({row.calendar_event_link})"
+            if row.meet_join_url
+            else f"🗓 [Calendar]({row.calendar_event_link})"
+        )
+    else:
+        link_line = (
+            f"🔗 [Zoom]({row.zoom_join_url})  |  🗓 [Calendar]({row.calendar_event_link})"
+        )
     return (
-        f"🏷 *{row.topic}* (id={row.id})\n"
+        f"🏷 *{title_prefix}{row.topic}* (id={row.id}){hy_tag}\n"
         f"{time_line}\n"
         f"⏱ {row.duration_min} phút\n"
         f"🎯 {row.agenda or '(không)'}\n"
         f"👥 Khách:\n{attendees}\n"
-        f"🔗 [Zoom]({row.zoom_join_url})  |  🗓 [Calendar]({row.calendar_event_link})"
+        f"{link_line}"
         f"{status_tag}"
     )
 

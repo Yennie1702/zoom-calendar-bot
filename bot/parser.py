@@ -39,6 +39,7 @@ class ParsedCommand:
     attendees: list[str]
     recurring: dict | None = None  # {"byday": "WE", "count": 12} or None
     raw_labels: dict[str, str] = field(default_factory=dict)
+    is_personal: bool = False  # True khi keyword mở đầu là "HY" (lịch cá nhân)
 
 
 # Vietnamese weekday → RRULE BYDAY
@@ -71,6 +72,17 @@ _RE_TOPIC = re.compile(
     r'(?:t[aạ]o\s+l[iị]ch|l[iị]ch)\s*[:：]?\s*["\u201c\']?(?P<title>[^"\u201d\n]+?)["\u201d\']?\s*[:：]?\s*(?=\n)',
     re.IGNORECASE,
 )
+# Lịch cá nhân "HY" — match HY as standalone first word, then title
+_RE_TOPIC_HY = re.compile(
+    r'^\s*HY\b\s*[:：]?\s*["\u201c\']?(?P<title>[^"\u201d\n]+?)["\u201d\']?\s*[:：]?\s*(?=\n)',
+    re.IGNORECASE,
+)
+_RE_HY_PREFIX = re.compile(r'^\s*HY\b', re.IGNORECASE)
+
+
+def is_personal_prefix(text: str) -> bool:
+    """True when the command begins with the 'HY' keyword (lịch cá nhân)."""
+    return bool(_RE_HY_PREFIX.match(text))
 _RE_LABEL_LINE = re.compile(r'^\s*[-•*]\s*([^:：]+)\s*[:：]\s*(.+?)\s*$')
 _RE_EMAIL = re.compile(r'\b[\w.+-]+@[\w-]+\.[\w.-]+\b')
 _RE_TIME = re.compile(
@@ -89,8 +101,14 @@ _RE_RECUR_COUNT = re.compile(
 
 
 def parse_command(text: str) -> ParsedCommand:
-    """Parse Vietnamese scheduling command. Raise ParseError if critical field missing."""
-    topic = _parse_topic(text)
+    """Parse Vietnamese scheduling command. Raise ParseError if critical field missing.
+
+    Supports two openings:
+      - "Tạo lịch ..." → standard work flow (Zoom + Calendar invite to khách)
+      - "HY ..."       → lịch cá nhân (Meet auto-link + visibility=private, no Zoom)
+    """
+    is_personal = is_personal_prefix(text)
+    topic = _parse_topic(text, is_personal=is_personal)
     labels = _extract_labels(text)
 
     time_str = labels.get("time")
@@ -114,17 +132,22 @@ def parse_command(text: str) -> ParsedCommand:
         attendees=attendees,
         recurring=recurring,
         raw_labels=labels,
+        is_personal=is_personal,
     )
 
 
-def _parse_topic(text: str) -> str:
-    m = _RE_TOPIC.search(text + "\n")  # append newline so regex lookahead matches on last line
+def _parse_topic(text: str, *, is_personal: bool = False) -> str:
+    pattern = _RE_TOPIC_HY if is_personal else _RE_TOPIC
+    m = pattern.search(text + "\n")  # append newline so lookahead matches last line
     if not m:
-        # Fallback: use first line after "tạo lịch"
         first = text.strip().splitlines()[0]
+        fmt_hint = (
+            'HY "TÊN":\\n- Thời gian: ...' if is_personal
+            else 'Tạo lịch "TÊN":\\n- Thời gian: ...'
+        )
         raise ParseError(
-            f'Em chưa parse được tên lịch. Chị dùng format: Tạo lịch "TÊN": ...'
-            f' (dòng đầu chị ghi: {first!r})'
+            f"Em chưa parse được tên lịch. Chị dùng format: {fmt_hint}"
+            f" (dòng đầu chị ghi: {first!r})"
         )
     title = m.group("title").strip().strip('"\u201c\u201d\'')
     if not title:

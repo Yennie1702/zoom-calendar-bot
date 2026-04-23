@@ -144,14 +144,28 @@ def _format_reminder(row: EventRow, occ_iso: str) -> str:
         if row.attendees else "  (không)"
     )
     occ_tag = " *(1 buổi của lịch lặp)*" if row.recurring else ""
+    is_personal = row.provider == "meet"
+    if is_personal:
+        hy_badge = "🔒 *Lịch HY cá nhân* · "
+        link_block = (
+            f"🔗 [Google Meet]({row.meet_join_url})" if row.meet_join_url
+            else "_(Meet link hiện trên Calendar event.)_"
+        )
+        title_prefix = "🔒 "
+    else:
+        hy_badge = ""
+        link_block = (
+            f"🔗 [Zoom]({row.zoom_join_url})\n"
+            f"🆔 `{row.zoom_meeting_id}` · 🔑 `{row.zoom_passcode}`"
+        )
+        title_prefix = ""
     return (
-        f"⏰ *Nhắc lịch ~30 phút nữa* — {time_str}{occ_tag}\n\n"
-        f"🏷 *{row.topic}* (id={row.id})\n"
+        f"⏰ *Nhắc lịch ~30 phút nữa* — {hy_badge}{time_str}{occ_tag}\n\n"
+        f"🏷 *{title_prefix}{row.topic}* (id={row.id})\n"
         f"🎯 {row.agenda or '(không)'}\n"
         f"⏱ {row.duration_min} phút\n"
         f"👥 Khách:\n{attendees}\n\n"
-        f"🔗 [Zoom]({row.zoom_join_url})\n"
-        f"🆔 `{row.zoom_meeting_id}` · 🔑 `{row.zoom_passcode}`"
+        f"{link_block}"
     )
 
 
@@ -213,10 +227,11 @@ def _format_digest(
         end = occ_dt + timedelta(minutes=row.duration_min)
         time_str = f"{occ_dt.hour:02d}:{occ_dt.minute:02d}–{end.hour:02d}:{end.minute:02d}"
         tag = "🔁" if row.recurring else "🎯"
+        hy = "🔒 " if row.provider == "meet" else ""
         att_suffix = f" · 👥 {len(row.attendees)}" if row.attendees else ""
         merged.append((
             occ_iso,
-            f"{tag} *{time_str}* — {row.topic} (id={row.id}){att_suffix}",
+            f"{tag} *{time_str}* — {hy}{row.topic} (id={row.id}){att_suffix}",
         ))
     for occ in externals:
         occ_dt = occ.start_dt

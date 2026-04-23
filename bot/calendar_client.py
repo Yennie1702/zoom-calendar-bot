@@ -24,6 +24,7 @@ class CalendarEvent:
     event_id: str
     html_link: str
     calendar_id: str
+    hangout_link: str = ""  # Google Meet link (set when with_meet=True)
 
 
 class CalendarClient:
@@ -55,6 +56,9 @@ class CalendarClient:
         attendee_emails: list[str],
         rrule: str | None = None,  # e.g. "RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=12"
         calendar_id: str | None = None,
+        with_meet: bool = False,
+        visibility: str | None = None,  # "default" / "public" / "private"
+        notify: bool = True,
     ) -> CalendarEvent:
         cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
 
@@ -71,9 +75,20 @@ class CalendarClient:
                     {"method": "email", "minutes": 30},
                 ],
             },
-            # Suppress Google Meet auto-link (brief uses Zoom, not Meet)
-            "conferenceData": None,
         }
+        if with_meet:
+            import uuid as _uuid
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": _uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                },
+            }
+        else:
+            # Suppress Meet auto-link on work flow (brief uses Zoom, not Meet)
+            body["conferenceData"] = None
+        if visibility:
+            body["visibility"] = visibility
         if rrule:
             body["recurrence"] = [rrule]
 
@@ -82,16 +97,20 @@ class CalendarClient:
             .insert(
                 calendarId=cal,
                 body=body,
-                sendUpdates="all",  # send invite emails
-                conferenceDataVersion=0,
+                sendUpdates="all" if notify else "none",
+                conferenceDataVersion=1 if with_meet else 0,
             )
             .execute()
         )
-        log.info("Created Calendar event %s on %s", resp["id"], cal)
+        log.info(
+            "Created Calendar event %s on %s (meet=%s, vis=%s)",
+            resp["id"], cal, with_meet, visibility or "default",
+        )
         return CalendarEvent(
             event_id=resp["id"],
             html_link=resp.get("htmlLink", ""),
             calendar_id=cal,
+            hangout_link=resp.get("hangoutLink", ""),
         )
 
     def patch_event(

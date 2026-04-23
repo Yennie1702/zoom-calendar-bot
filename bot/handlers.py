@@ -30,6 +30,7 @@ from bot.parser import (
     ParseError,
     ParsedCommand,
     TargetSpec,
+    is_personal_prefix,
     parse_clone,
     parse_command,
     parse_edit_duration,
@@ -133,6 +134,27 @@ _HELP_TEXT = (
         "- Mời khách: a@x.vn, b@y.vn"
     ) + "\n"
     "Bot parse → preview → bấm ✅ để tạo thật.\n\n"
+
+    "🔒 <b>LỊCH HY — CÁ NHÂN</b> (chỉ chị xem, Meet thay Zoom)\n"
+    "Keyword <code>HY</code> thay cho <code>Tạo lịch</code>. "
+    "Bot auto-gen Google Meet, set <i>visibility: private</i>, <b>KHÔNG tạo Zoom</b>, "
+    "không ghi tên John Academy trong mô tả.\n"
+    "<i>One-time:</i>\n"
+    + _pre(
+        'HY "Check-in sức khoẻ":\n'
+        "- Thời gian: 25/4/2026 9:00\n"
+        "- Thời lượng: 30 phút\n"
+        "- Nội dung: Tự review tuần"
+    ) + "\n"
+    "<i>Recurring (hàng tuần) + mời khách:</i>\n"
+    + _pre(
+        'HY "Mentor 1-1 Linh":\n'
+        "- Thời gian: 10h sáng thứ 6 hàng tuần trong 8 tuần liên tiếp bắt đầu từ 1/5/2026\n"
+        "- Thời lượng: 60 phút\n"
+        "- Nội dung: Coaching cá nhân\n"
+        "- Khách: linh@abc.com"
+    ) + "\n"
+    "Trong /list hiện dấu 🔒 cạnh tên lịch HY.\n\n"
 
     "⚡ <b>SỬA NHANH — LỊCH MỚI NHẤT</b>\n"
     "Nhắn thẳng (không cần format):\n"
@@ -618,8 +640,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _handle_clone(update, ctx, clone)
         return
 
-    # 5) Default: create flow
-    if "tạo lịch" not in text.lower() and "tao lich" not in text.lower():
+    # 5) Default: create flow — accept "tạo lịch" (work) or "HY" prefix (cá nhân)
+    low_txt = text.lower()
+    is_hy = is_personal_prefix(text)
+    if "tạo lịch" not in low_txt and "tao lich" not in low_txt and not is_hy:
         await update.message.reply_text(
             "Em chưa hiểu. Gõ /help để xem ví dụ hoặc /list để quản lý lịch cũ."
         )
@@ -943,8 +967,8 @@ def _apply_drift_sync(row: db.EventRow, diffs: dict) -> None:
     if "attendees" in diffs:
         updates["attendees"] = diffs["attendees"][1]
 
-    # Zoom: push any time/duration/topic change
-    if zoom_kwargs:
+    # Zoom: push any time/duration/topic change (skip for HY — no Zoom backing)
+    if zoom_kwargs and row.provider != "meet":
         _zoom.update_meeting(row.zoom_meeting_id, **zoom_kwargs)
 
     # DB: last-write-wins
@@ -1174,11 +1198,15 @@ def _fetch_occurrences(row: db.EventRow) -> list[dict]:
     """
     if not row.recurring:
         return []
-    zoom_detail = _zoom.get_meeting(row.zoom_meeting_id)
-    zoom_occs = sorted(
-        zoom_detail.get("occurrences", []),
-        key=lambda o: o["start_time"],
-    )
+    is_personal = row.provider == "meet"
+    if is_personal:
+        zoom_occs: list = []
+    else:
+        zoom_detail = _zoom.get_meeting(row.zoom_meeting_id)
+        zoom_occs = sorted(
+            zoom_detail.get("occurrences", []),
+            key=lambda o: o["start_time"],
+        )
     cal_instances = _get_calendar().list_instances(row.calendar_event_id)
     cal_instances_sorted = sorted(
         cal_instances,
@@ -1618,8 +1646,11 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if cmd is None:
         await query.edit_message_text("⚠️ Phiên confirm đã hết hạn. Gửi lại lệnh giúp em.")
         return
-    await query.edit_message_text("⏳ Đang tạo Zoom + Calendar event…")
     try:
+        if cmd.is_personal:
+            await _do_create_personal(query, ctx, cmd)
+            return
+        await query.edit_message_text("⏳ Đang tạo Zoom + Calendar event…")
         recurrence = None
         if cmd.recurring:
             recurrence = build_weekly_recurrence(
@@ -1690,6 +1721,77 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx.chat_data.pop("pending", None)
 
 
+async def _do_create_personal(query, ctx, cmd) -> None:
+    """HY flow: Google Meet auto-link + visibility=private, no Zoom."""
+    await query.edit_message_text("⏳ Đang tạo lịch HY cá nhân (Meet, private)…")
+    start_iso = cmd.start.strftime("%Y-%m-%dT%H:%M:%S")
+    end_local_iso = (cmd.start + timedelta(minutes=cmd.duration_min)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+    rrule = None
+    if cmd.recurring:
+        rrule = (
+            f"RRULE:FREQ=WEEKLY;BYDAY={cmd.recurring['byday']};"
+            f"COUNT={cmd.recurring['count']}"
+        )
+    # Step 1: create event with Meet auto-gen. Description placeholder first —
+    # we don't know the Meet link yet.
+    placeholder_desc = formatter.format_personal_calendar_description(
+        cmd=cmd, meet_link=""
+    )
+    event = _get_calendar().create_event(
+        summary=f"[HY] {cmd.topic}",
+        description=placeholder_desc,
+        start_local_iso=start_iso,
+        end_local_iso=end_local_iso,
+        attendee_emails=cmd.attendees,
+        rrule=rrule,
+        with_meet=True,
+        visibility="private",
+        notify=bool(cmd.attendees),
+    )
+    # Step 2: patch description now that we have the real Meet link
+    meet_link = event.hangout_link or ""
+    if meet_link:
+        final_desc = formatter.format_personal_calendar_description(
+            cmd=cmd, meet_link=meet_link
+        )
+        try:
+            _get_calendar().patch_event(
+                event.event_id,
+                description=final_desc,
+                notify=False,
+            )
+        except Exception:
+            log.exception("Failed to patch HY description with Meet link (non-fatal)")
+    event_id = db.insert_event(
+        topic=cmd.topic,
+        start_local=start_iso,
+        duration_min=cmd.duration_min,
+        agenda=cmd.agenda,
+        attendees=cmd.attendees,
+        recurring=cmd.recurring,
+        zoom_meeting_id="",
+        zoom_join_url="",
+        zoom_passcode="",
+        calendar_event_id=event.event_id,
+        calendar_event_link=event.html_link,
+        provider="meet",
+        meet_join_url=meet_link,
+    )
+    ctx.chat_data["last_created_id"] = event_id
+    reply = formatter.format_personal_success_reply(
+        cmd=cmd,
+        meet_link=meet_link,
+        calendar_event_link=event.html_link,
+    )
+    await query.edit_message_text(
+        reply + f"\n\n🆔 *DB id:* `{event_id}` — gõ /list để sửa/xoá.",
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True,
+    )
+
+
 # ── Action: edit ───────────────────────────────────────────────────────────────
 async def _do_edit(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, *, notify: bool = True
@@ -1736,7 +1838,8 @@ async def _do_edit(
 
 
 def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True) -> None:
-    """Sync one field across Zoom, Google Calendar, and local DB."""
+    """Sync one field across Zoom (if applicable), Google Calendar, and local DB."""
+    is_personal = row.provider == "meet"
     # Compute the "after" state we need for side effects
     topic = row.topic
     start_local = row.start_local
@@ -1759,8 +1862,8 @@ def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True)
     start_dt = _dt.fromisoformat(start_local)
     end_dt = start_dt + timedelta(minutes=duration_min)
 
-    # Zoom: update if time/duration/topic/agenda changed
-    if field in ("time", "dur", "topic", "ag"):
+    # Zoom: update if time/duration/topic/agenda changed — skip for HY (no Zoom)
+    if not is_personal and field in ("time", "dur", "topic", "ag"):
         _zoom.update_meeting(
             row.zoom_meeting_id,
             topic=topic if field == "topic" else None,
@@ -1779,17 +1882,25 @@ def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True)
             calendar_event_id=row.calendar_event_id,
             calendar_event_link=row.calendar_event_link,
             status=row.status, created_at=row.created_at, updated_at=row.updated_at,
+            provider=row.provider, meet_join_url=row.meet_join_url,
         )
     )
-    new_description = formatter.format_calendar_description(
-        cmd=cmd_like,
-        zoom_join_url=row.zoom_join_url,
-        zoom_meeting_id=int(row.zoom_meeting_id),
-        zoom_passcode=row.zoom_passcode,
-    )
+    if is_personal:
+        new_description = formatter.format_personal_calendar_description(
+            cmd=cmd_like, meet_link=row.meet_join_url,
+        )
+        summary_update = f"[HY] {topic}" if field == "topic" else None
+    else:
+        new_description = formatter.format_calendar_description(
+            cmd=cmd_like,
+            zoom_join_url=row.zoom_join_url,
+            zoom_meeting_id=int(row.zoom_meeting_id),
+            zoom_passcode=row.zoom_passcode,
+        )
+        summary_update = f"[John Academy] {topic}" if field == "topic" else None
     _get_calendar().patch_event(
         row.calendar_event_id,
-        summary=f"[John Academy] {topic}" if field == "topic" else None,
+        summary=summary_update,
         description=new_description,
         start_local_iso=start_local if field in ("time", "dur") else None,
         end_local_iso=end_dt.isoformat(timespec="seconds") if field in ("time", "dur") else None,
@@ -1818,12 +1929,15 @@ async def _do_delete(query, event_id: int, *, notify: bool = True) -> None:
     if row is None or row.status != "active":
         await query.edit_message_text("⚠️ Lịch này không còn.")
         return
+    is_personal = row.provider == "meet"
     mail_note = "Khách đã nhận email huỷ." if notify else "Không gửi email cho khách."
-    await query.edit_message_text(f"⏳ Đang xoá Zoom + Calendar… ({mail_note})")
-    try:
-        _zoom.delete_meeting(row.zoom_meeting_id)
-    except Exception:
-        log.exception("Zoom delete failed (soft-continuing)")
+    step_label = "Calendar" if is_personal else "Zoom + Calendar"
+    await query.edit_message_text(f"⏳ Đang xoá {step_label}… ({mail_note})")
+    if not is_personal:
+        try:
+            _zoom.delete_meeting(row.zoom_meeting_id)
+        except Exception:
+            log.exception("Zoom delete failed (soft-continuing)")
     try:
         _get_calendar().delete_event(row.calendar_event_id, notify=notify)
     except Exception:
@@ -1857,8 +1971,9 @@ def _apply_occurrence_edit(
     start_iso = start_dt.isoformat(timespec="seconds")
     end_iso = (start_dt + timedelta(minutes=duration_min)).isoformat(timespec="seconds")
 
-    # Zoom occurrence update
-    if occ["zoom_occ_id"]:
+    is_personal = row.provider == "meet"
+    # Zoom occurrence update — skip for HY (no Zoom backing)
+    if not is_personal and occ["zoom_occ_id"]:
         _zoom.update_occurrence(
             row.zoom_meeting_id,
             occ["zoom_occ_id"],
@@ -1912,10 +2027,12 @@ async def _do_delete_occurrence(
     if not row:
         await query.edit_message_text("⚠️ Lịch không tồn tại.")
         return
+    is_personal = row.provider == "meet"
     mail_note = "Khách đã nhận email huỷ buổi." if notify else "Không gửi email cho khách."
-    await query.edit_message_text(f"⏳ Đang huỷ 1 buổi trên Zoom + Calendar… ({mail_note})")
+    step_label = "Calendar" if is_personal else "Zoom + Calendar"
+    await query.edit_message_text(f"⏳ Đang huỷ 1 buổi trên {step_label}… ({mail_note})")
     try:
-        if occ["zoom_occ_id"]:
+        if not is_personal and occ["zoom_occ_id"]:
             try:
                 _zoom.delete_occurrence(row.zoom_meeting_id, occ["zoom_occ_id"])
             except Exception:

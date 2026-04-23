@@ -72,6 +72,8 @@ class EventRow:
     updated_at: str
     cancelled_occurrences: list[str] = None
     reminders_sent: list[str] = None
+    provider: str = "zoom"  # "zoom" (default) or "meet" (lịch HY cá nhân)
+    meet_join_url: str = ""
 
     def __post_init__(self):
         if self.cancelled_occurrences is None:
@@ -159,6 +161,19 @@ def _ensure_schema(c) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+    # Migration: provider + meet_join_url added 2026-04-23 for lịch HY cá nhân (Meet)
+    try:
+        c.execute(
+            "ALTER TABLE events ADD COLUMN provider TEXT NOT NULL DEFAULT 'zoom'"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        c.execute(
+            "ALTER TABLE events ADD COLUMN meet_join_url TEXT NOT NULL DEFAULT ''"
+        )
+    except Exception:  # noqa: BLE001
+        pass
     # Meta KV table — used by daily digest + any future singleton state
     c.execute(
         "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -214,6 +229,14 @@ def _row_to_event(r) -> EventRow:
         reminders = json.loads(reminders_raw or "[]")
     except (TypeError, json.JSONDecodeError):
         reminders = []
+    try:
+        provider = (r["provider"] or "zoom")
+    except (KeyError, IndexError):
+        provider = "zoom"
+    try:
+        meet_join_url = r["meet_join_url"] or ""
+    except (KeyError, IndexError):
+        meet_join_url = ""
     return EventRow(
         id=int(r["id"]),
         topic=r["topic"],
@@ -232,6 +255,8 @@ def _row_to_event(r) -> EventRow:
         updated_at=r["updated_at"],
         cancelled_occurrences=cancelled,
         reminders_sent=reminders,
+        provider=provider,
+        meet_join_url=meet_join_url,
     )
 
 
@@ -248,6 +273,8 @@ def insert_event(
     zoom_passcode: str,
     calendar_event_id: str,
     calendar_event_link: str,
+    provider: str = "zoom",
+    meet_join_url: str = "",
 ) -> int:
     now = _now_iso()
     with _conn() as c:
@@ -256,8 +283,9 @@ def insert_event(
             INSERT INTO events (
                 created_at, updated_at, topic, start_local, duration_min, agenda,
                 attendees, recurring, zoom_meeting_id, zoom_join_url, zoom_passcode,
-                calendar_event_id, calendar_event_link, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                calendar_event_id, calendar_event_link, status,
+                provider, meet_join_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             """,
             (
                 now, now, topic, start_local, duration_min, agenda,
@@ -265,6 +293,7 @@ def insert_event(
                 json.dumps(recurring, ensure_ascii=False) if recurring else None,
                 zoom_meeting_id, zoom_join_url, zoom_passcode,
                 calendar_event_id, calendar_event_link,
+                provider, meet_join_url,
             ),
         )
         return int(cur.lastrowid)
