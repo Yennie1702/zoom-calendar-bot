@@ -315,3 +315,24 @@ def format_occurrence_list(
 def format_occurrence_date(occ: dict) -> str:
     d = datetime.fromisoformat(occ["start_local"])
     return f"{_WEEKDAY_VI[d.weekday()]} {d.day}/{d.month} {d.hour:02d}:{d.minute:02d}"
+
+
+def format_conflict_warning(conflicts: list[tuple[EventRow, str]]) -> str:
+    """Warning block appended to create/edit-time previews when overlaps exist."""
+    if not conflicts:
+        return ""
+    lines = [
+        "",
+        f"⚠️ *Cảnh báo trùng lịch* — phát hiện {len(conflicts)} lịch đã có overlap:",
+    ]
+    for ev, occ_iso in conflicts:
+        d = datetime.fromisoformat(occ_iso)
+        end = d + timedelta(minutes=ev.duration_min)
+        time_str = (
+            f"{d.day}/{d.month}/{d.year} "
+            f"{d.hour:02d}:{d.minute:02d}–{end.hour:02d}:{end.minute:02d}"
+        )
+        prefix = "🔁" if ev.recurring else "·"
+        lines.append(f"  {prefix} id={ev.id} *{ev.topic}* lúc {time_str}")
+    lines.append("_Chị vẫn có thể confirm nếu cố ý trùng._")
+    return "\n".join(lines)

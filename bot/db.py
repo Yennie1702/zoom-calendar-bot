@@ -376,3 +376,47 @@ def latest_created() -> EventRow | None:
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
     return _row_to_event(r) if r else None
+
+
+def _expand_event_starts(row: EventRow) -> list[datetime]:
+    """All concrete occurrence start datetimes for `row`, skipping cancelled."""
+    base = row.start_dt
+    if not row.recurring:
+        return [base]
+    count = int(row.recurring.get("count", 1))
+    from datetime import timedelta
+    starts = [base + timedelta(weeks=i) for i in range(count)]
+    cancelled = set(row.cancelled_occurrences or [])
+    return [s for s in starts if s.isoformat(timespec="seconds") not in cancelled]
+
+
+def find_conflicts(
+    start_local: str,
+    duration_min: int,
+    *,
+    exclude_id: int | None = None,
+) -> list[tuple[EventRow, str]]:
+    """Return [(event, occurrence_iso)] for every active event whose occurrence
+    overlaps the candidate [start_local, start_local + duration_min].
+
+    Recurring events are expanded client-side — cancelled occurrences skipped.
+    First overlapping occurrence per event is returned (enough for a warning).
+    """
+    from datetime import timedelta
+    start = datetime.fromisoformat(start_local)
+    end = start + timedelta(minutes=duration_min)
+
+    with _conn() as c:
+        raw = c.execute("SELECT * FROM events WHERE status = 'active'").fetchall()
+
+    hits: list[tuple[EventRow, str]] = []
+    for r in raw:
+        ev = _row_to_event(r)
+        if exclude_id is not None and ev.id == exclude_id:
+            continue
+        for occ_start in _expand_event_starts(ev):
+            occ_end = occ_start + timedelta(minutes=ev.duration_min)
+            if occ_start < end and occ_end > start:
+                hits.append((ev, occ_start.isoformat(timespec="seconds")))
+                break
+    return hits

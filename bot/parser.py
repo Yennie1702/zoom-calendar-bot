@@ -1,5 +1,7 @@
 """Vietnamese natural-language parser for scheduling commands.
 
+Also hosts the clone parser: `tạo lịch giống <target> [nhưng <overrides>]`.
+
 MVP: pure regex, handles the brief's structured format. Optimized for reliability
 over flexibility — chị Yến can adapt her command format if edge cases don't parse.
 
@@ -511,6 +513,233 @@ def _month_range(year: int, month: int) -> tuple[str, str]:
         nxt = date(year, month + 1, 1)
     last = nxt - timedelta(days=1)
     return first.isoformat(), last.isoformat()
+
+
+# ── Clone parser ──────────────────────────────────────────────────────────────
+# `tạo lịch giống #5 nhưng ngày 27/4 15h khách a@x.vn`
+# Target forms: #id, "topic", ngày DD/MM, khách email, bare topic string.
+# Override tokens (comma-separated OK): ngày / giờ / thời lượng / tên "..." / nội dung / khách / thêm khách.
+_RE_CLONE_PREFIX = re.compile(
+    r'^\s*(?:t[aạ]o\s+l[iị]ch|l[iị]ch)\s+(?:gi[ốôo]ng|nh[uư])\s+(.+)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+@dataclass
+class CloneOverrides:
+    """Fields to override on the clone. Any None → keep source value."""
+    topic: str | None = None
+    start_date: date | None = None
+    start_time: tuple[int, int] | None = None  # (hour, minute)
+    duration_min: int | None = None
+    agenda: str | None = None
+    attendees_replace: list[str] | None = None
+    attendees_add: list[str] | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not any([
+            self.topic, self.start_date, self.start_time, self.duration_min,
+            self.agenda, self.attendees_replace, self.attendees_add,
+        ])
+
+
+@dataclass
+class CloneSpec:
+    target: TargetSpec
+    overrides: CloneOverrides
+
+
+def parse_clone(text: str) -> CloneSpec | None:
+    """Detect `tạo lịch giống <target> [nhưng <overrides>]`. None if not clone.
+
+    Raises ParseError only if the prefix matches but target is missing —
+    ambiguity with the main create parser is avoided by checking the
+    `giống / như` keyword.
+    """
+    m = _RE_CLONE_PREFIX.match(text.strip())
+    if not m:
+        return None
+    rest = m.group(1).strip()
+
+    # Split on first "nhưng" / "nhung" keyword (case-insensitive, word boundary)
+    split = re.split(r'\s+nh[uư]ng\s+', rest, maxsplit=1, flags=re.IGNORECASE)
+    target_part = split[0].strip()
+    override_text = split[1].strip() if len(split) > 1 else ""
+
+    # 1) Target: #id first
+    target = TargetSpec()
+    m_id = _RE_TARGET_ID.search(target_part)
+    if m_id:
+        target.id = int(m_id.group(1))
+        target_part = (target_part[: m_id.start()] + target_part[m_id.end():]).strip()
+
+    # 2) Natural target specifiers (quoted topic / ngày / khách)
+    leftover, natural = _extract_natural_target(target_part)
+    target.topic = target.topic or natural.topic
+    target.attendee = target.attendee or natural.attendee
+    target.date = target.date or natural.date
+
+    # 3) Any bare string leftover → treat as topic (chị gõ `tạo lịch giống Mentor MBOs nhưng ...`)
+    if not target.topic and not target.id and leftover:
+        bare = leftover.strip().strip('"\u201c\u201d\'').strip()
+        if bare:
+            target.topic = bare
+
+    if target.is_empty:
+        raise ParseError(
+            "Em cần biết chị muốn clone lịch nào. "
+            'VD: `tạo lịch giống #5 nhưng ngày 27/4 15h` hoặc '
+            '`tạo lịch giống "Mentor MBOs" nhưng ngày mai`.'
+        )
+
+    overrides = _parse_clone_overrides(override_text)
+    return CloneSpec(target=target, overrides=overrides)
+
+
+def _parse_clone_overrides(text: str) -> CloneOverrides:
+    """Parse the part after `nhưng`. Empty → no overrides (pure copy)."""
+    out = CloneOverrides()
+    s = text.strip()
+    if not s:
+        return out
+
+    # Try multi-line labelled form first (same labels as create)
+    labels = _extract_labels(s)
+    if labels:
+        if "time" in labels:
+            start_dt, _rec = _parse_time_and_recurrence(labels["time"])
+            out.start_date = start_dt.date()
+            out.start_time = (start_dt.hour, start_dt.minute)
+        if "duration" in labels:
+            n = _parse_duration(labels["duration"])
+            if n:
+                out.duration_min = n
+        if "agenda" in labels:
+            out.agenda = labels["agenda"]
+        if "attendees" in labels:
+            emails = _parse_emails(labels["attendees"])
+            if emails:
+                out.attendees_replace = emails
+        return out
+
+    # Single-line form: iteratively strip known keyword tokens.
+
+    # "thêm khách <emails>" — ADD (must run before "khách" to not be swallowed)
+    m = re.search(
+        r'(?:thêm|them)\s+(?:khách|khach)\s+'
+        r'(?P<emails>(?:[\w.+\-]+@[\w\-]+\.[\w.\-]+[\s,]*)+)',
+        s, re.IGNORECASE,
+    )
+    if m:
+        out.attendees_add = _parse_emails(m.group("emails"))
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # "khách <emails>" — REPLACE
+    m = re.search(
+        r'(?:khách|khach)\s+'
+        r'(?P<emails>(?:[\w.+\-]+@[\w\-]+\.[\w.\-]+[\s,]*)+)',
+        s, re.IGNORECASE,
+    )
+    if m and out.attendees_replace is None:
+        emails = _parse_emails(m.group("emails"))
+        if emails:
+            out.attendees_replace = emails
+            s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # "tên \"...\"" or "tên <ABC>" — stops at comma or next keyword
+    m = re.search(
+        r'(?:tên|ten)\s+'
+        r'(?:["\u201c\']([^"\u201d\']+)["\u201d\']'
+        r'|([^,\n]+?))'
+        r'(?=\s*(?:,|$|(?:thời|thoi|nội|noi|khách|khach|ngày|ngay|giờ|gio)\b))',
+        s, re.IGNORECASE,
+    )
+    if m:
+        out.topic = (m.group(1) or m.group(2) or "").strip()
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # "thời lượng N phút|tiếng"
+    m = re.search(
+        r'(?:thời lượng|thoi luong)\s+(\d+\s*(?:phút|phut|p|giờ|gio|h|tiếng|tieng))',
+        s, re.IGNORECASE,
+    )
+    if m:
+        n = _parse_duration(m.group(1))
+        if n:
+            out.duration_min = n
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # "nội dung <text>" — greedy until next known keyword or comma boundary
+    m = re.search(
+        r'(?:nội dung|noi dung)\s+'
+        r'(?P<v>.+?)'
+        r'(?=\s*(?:,|$|(?:tên|ten|khách|khach|thêm|them|ngày|ngay|giờ|gio|thời|thoi)\b))',
+        s, re.IGNORECASE,
+    )
+    if m:
+        out.agenda = m.group("v").strip()
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # "ngày DD/MM[/YYYY]" labelled
+    m = re.search(
+        r"(?:ngày|ngay)\s+(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?",
+        s, re.IGNORECASE,
+    )
+    if m:
+        day = int(m.group(1)); month = int(m.group(2))
+        year = _resolve_year(m.group(3), month, day)
+        out.start_date = date(year, month, day)
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+    else:
+        # Relative: "ngày mai" / "hôm nay" / "hôm qua"
+        low = s.lower()
+        today = date.today()
+        if re.search(r"\b(ngày mai|ngay mai|mai)\b", low):
+            out.start_date = today + timedelta(days=1)
+            s = re.sub(r"\b(ngày mai|ngay mai|mai)\b", "", s, flags=re.IGNORECASE).strip(" ,")
+        elif re.search(r"\b(hôm nay|hom nay)\b", low):
+            out.start_date = today
+            s = re.sub(r"\b(hôm nay|hom nay)\b", "", s, flags=re.IGNORECASE).strip(" ,")
+
+    # "giờ HHh[MM]" labelled
+    m = re.search(
+        r"(?:giờ|gio)\s+(\d{1,2})\s*(?:h|giờ|:)\s*(\d{0,2})\s*"
+        r"(sáng|chiều|tối|trưa|đêm|sang|chieu|toi|trua|dem)?",
+        s, re.IGNORECASE,
+    )
+    if m:
+        hour = int(m.group(1)); minute = int(m.group(2) or "0")
+        period = (m.group(3) or "").lower()
+        if period in ("chiều", "chieu", "tối", "toi", "đêm", "dem") and hour < 12:
+            hour += 12
+        if period in ("sáng", "sang") and hour == 12:
+            hour = 0
+        out.start_time = (hour, minute)
+        s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # Bare `DD/MM[/YYYY]` if no ngày consumed
+    if out.start_date is None:
+        m = _RE_DATE.search(s)
+        if m:
+            day = int(m.group(1)); month = int(m.group(2))
+            year = _resolve_year(m.group(3), month, day)
+            out.start_date = date(year, month, day)
+            s = (s[: m.start()] + s[m.end():]).strip(" ,")
+
+    # Bare `HHh[MM]` if no giờ consumed
+    if out.start_time is None:
+        m = _RE_TIME.search(s.lower())
+        if m:
+            hour = int(m.group(1)); minute = int(m.group(2) or "0")
+            period = (m.group(3) or "").lower()
+            if period in ("chiều", "chieu", "tối", "toi", "đêm", "dem") and hour < 12:
+                hour += 12
+            if period in ("sáng", "sang") and hour == 12:
+                hour = 0
+            out.start_time = (hour, minute)
+
+    return out
 
 
 def parse_list_args(raw: str) -> ListQuery:

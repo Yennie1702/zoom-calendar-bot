@@ -25,8 +25,12 @@ from telegram.ext import ContextTypes
 from bot import config, db, formatter
 from bot.calendar_client import CalendarClient
 from bot.parser import (
+    CloneOverrides,
+    CloneSpec,
     ParseError,
+    ParsedCommand,
     TargetSpec,
+    parse_clone,
     parse_command,
     parse_edit_duration,
     parse_edit_emails,
@@ -140,6 +144,15 @@ _HELP_TEXT = (
     "sửa thời lượng 45 phút \"Mentor MBOs\"\n"
     "```\n"
     "Nếu nhiều lịch khớp → bot hiện list để chị bấm số chọn.\n\n"
+    "*Clone lịch cũ* (copy nhanh rồi chỉnh giờ/khách):\n"
+    "```\n"
+    "tạo lịch giống #5\n"
+    "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
+    "tạo lịch giống \"Tư vấn OKRs\" nhưng ngày mai, khách a@x.vn\n"
+    "tạo lịch giống #3 nhưng tên \"OKRs v2\", thêm khách b@y.vn\n"
+    "```\n\n"
+    "*Cảnh báo trùng lịch:* khi tạo/clone/đổi giờ, nếu overlap với lịch khác, "
+    "bot hiện cảnh báo. Chị vẫn confirm được nếu cố ý trùng.\n\n"
     "*Kéo thả trên Calendar:* chị kéo thả lịch thoải mái trên Google Calendar UI. "
     "Sau đó gõ `/sync` (lịch mới nhất) hoặc `/sync <id>` — bot sẽ so sánh và cập nhật Zoom + DB theo Calendar. "
     "Khi vào chi tiết qua /list, bot cũng tự phát hiện drift và hiện nút 🔄 Sync."
@@ -365,10 +378,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if low in {"huỷ", "hủy", "bỏ", "bo", "huy", "cancel", "/cancel"}:
         had = any(k in ctx.chat_data for k in
                   ("pending", "pending_edit", "pending_delete", "pending_sync",
-                   "edit_mode", "pending_quick_disambig"))
+                   "edit_mode", "pending_quick_disambig",
+                   "pending_clone_disambig"))
         for k in ("pending", "pending_edit", "pending_delete",
                   "pending_sync", "edit_mode", "occurrences",
-                  "pending_quick_disambig"):
+                  "pending_quick_disambig", "pending_clone_disambig"):
             ctx.chat_data.pop(k, None)
         await update.message.reply_text(
             "✅ Đã huỷ trạng thái chờ." if had else "ℹ️ Không có gì đang chờ."
@@ -401,7 +415,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # 4) Default: create flow
+    # 4) Clone flow must run BEFORE the generic create flow — "tạo lịch giống #5"
+    #    would otherwise be swallowed by parse_command with garbage topic.
+    try:
+        clone = parse_clone(text)
+    except ParseError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    if clone is not None:
+        await _handle_clone(update, ctx, clone)
+        return
+
+    # 5) Default: create flow
     if "tạo lịch" not in text.lower() and "tao lich" not in text.lower():
         await update.message.reply_text(
             "Em chưa hiểu. Gõ /help để xem ví dụ hoặc /list để quản lý lịch cũ."
@@ -419,13 +444,150 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     ctx.chat_data["pending"] = cmd
-    preview = formatter.format_confirm_preview(cmd)
+    conflicts = _collect_conflicts_for(cmd)
+    preview = formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
         InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
     ]])
     await update.message.reply_text(preview, reply_markup=keyboard,
                                      parse_mode=ParseMode.MARKDOWN)
+
+
+# ── Clone flow ────────────────────────────────────────────────────────────────
+async def _handle_clone(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, clone: CloneSpec
+) -> None:
+    """Resolve source lịch, apply overrides, route into the standard create preview."""
+    sources = _resolve_targets(ctx, clone.target)
+    if not sources:
+        await update.message.reply_text(
+            "⚠️ Không tìm thấy lịch nguồn để clone. "
+            "Thử `#id` hoặc thêm `\"tên lịch\"` / `ngày DD/MM`."
+        )
+        return
+    if len(sources) > 1:
+        ctx.chat_data["pending_clone_disambig"] = {
+            "overrides": _overrides_to_dict(clone.overrides),
+            "candidate_ids": [r.id for r in sources],
+        }
+        text = formatter.format_candidate_list(sources, "clone")
+        buttons = [
+            InlineKeyboardButton(str(i), callback_data=f"clone_sel:{r.id}")
+            for i, r in enumerate(sources, 1)
+        ]
+        rows_kb = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+        rows_kb.append([InlineKeyboardButton("❌ Huỷ", callback_data="clone_cancel")])
+        await update.message.reply_text(
+            text, reply_markup=InlineKeyboardMarkup(rows_kb),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    await _preview_clone(update.effective_message, ctx, sources[0], clone.overrides)
+
+
+def _overrides_to_dict(ov: CloneOverrides) -> dict:
+    return {
+        "topic": ov.topic,
+        "start_date": ov.start_date.isoformat() if ov.start_date else None,
+        "start_time": list(ov.start_time) if ov.start_time else None,
+        "duration_min": ov.duration_min,
+        "agenda": ov.agenda,
+        "attendees_replace": ov.attendees_replace,
+        "attendees_add": ov.attendees_add,
+    }
+
+
+def _dict_to_overrides(d: dict) -> CloneOverrides:
+    from datetime import date as _date
+    return CloneOverrides(
+        topic=d.get("topic"),
+        start_date=_date.fromisoformat(d["start_date"]) if d.get("start_date") else None,
+        start_time=tuple(d["start_time"]) if d.get("start_time") else None,
+        duration_min=d.get("duration_min"),
+        agenda=d.get("agenda"),
+        attendees_replace=d.get("attendees_replace"),
+        attendees_add=d.get("attendees_add"),
+    )
+
+
+def _build_clone_command(source: db.EventRow, ov: CloneOverrides) -> ParsedCommand:
+    """Merge source row + overrides into a fresh ParsedCommand.
+
+    Recurrence is dropped by default — a clone is a one-off lịch at the new time.
+    If chị needs another recurring series she can type one from scratch.
+    """
+    base = source.start_dt
+    new_date = ov.start_date or base.date()
+    hour, minute = (ov.start_time if ov.start_time else (base.hour, base.minute))
+    start = datetime(new_date.year, new_date.month, new_date.day, hour, minute)
+
+    attendees = list(source.attendees)
+    if ov.attendees_replace is not None:
+        attendees = list(ov.attendees_replace)
+    if ov.attendees_add:
+        attendees = list(dict.fromkeys([*attendees, *ov.attendees_add]))
+
+    return ParsedCommand(
+        topic=ov.topic or source.topic,
+        start=start,
+        duration_min=ov.duration_min or source.duration_min,
+        agenda=ov.agenda if ov.agenda is not None else source.agenda,
+        attendees=attendees,
+        recurring=None,
+    )
+
+
+async def _preview_clone(
+    reply_target,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    source: db.EventRow,
+    ov: CloneOverrides,
+) -> None:
+    cmd = _build_clone_command(source, ov)
+    ctx.chat_data["pending"] = cmd
+    conflicts = _collect_conflicts_for(cmd)
+    header = (
+        f"📋 *Clone lịch #{source.id}* "
+        f"({source.topic}) — bản mới sẽ là:\n\n"
+    )
+    preview = header + formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
+        InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
+    ]])
+    if hasattr(reply_target, "edit_message_text"):
+        await reply_target.edit_message_text(
+            preview, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await reply_target.reply_text(
+            preview, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
+        )
+
+
+def _collect_conflicts_for(
+    cmd: ParsedCommand, *, exclude_id: int | None = None
+) -> list[tuple[db.EventRow, str]]:
+    """Find overlaps for every occurrence of `cmd`. Deduped by conflicting-event id."""
+    occurrences = [cmd.start]
+    if cmd.recurring:
+        count = int(cmd.recurring.get("count", 1))
+        occurrences = [cmd.start + timedelta(weeks=i) for i in range(count)]
+
+    seen_ids: set[int] = set()
+    hits: list[tuple[db.EventRow, str]] = []
+    for occ_start in occurrences:
+        occ_iso = occ_start.isoformat(timespec="seconds")
+        for ev, conflict_iso in db.find_conflicts(
+            occ_iso, cmd.duration_min, exclude_id=exclude_id
+        ):
+            if ev.id in seen_ids:
+                continue
+            seen_ids.add(ev.id)
+            hits.append((ev, conflict_iso))
+    return hits
 
 
 async def _handle_edit_value(
@@ -468,6 +630,10 @@ async def _handle_edit_value(
         )
     else:
         preview = formatter.format_edit_preview(row, field, display)
+        if field == "time":
+            preview += formatter.format_conflict_warning(
+                _conflicts_for_time_edit(row, new_value)
+            )
     await update.message.reply_text(
         preview,
         reply_markup=_edit_confirm_keyboard(),
@@ -715,11 +881,22 @@ async def _apply_quick_edit_to_row(
         "display": display,
     }
     preview = formatter.format_edit_preview(row, field, display)
+    if field == "time":
+        preview += formatter.format_conflict_warning(
+            _conflicts_for_time_edit(row, new_value)
+        )
     await reply.reply_text(
         preview,
         reply_markup=_edit_confirm_keyboard(),
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+def _conflicts_for_time_edit(
+    row: db.EventRow, new_start_iso: str
+) -> list[tuple[db.EventRow, str]]:
+    """Check the new start time against every other active event, excluding self."""
+    return db.find_conflicts(new_start_iso, row.duration_min, exclude_id=row.id)
 
 
 def _resolve_target(
@@ -923,6 +1100,25 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         if data == "qd_cancel":
             ctx.chat_data.pop("pending_quick_disambig", None)
             await query.edit_message_text("❌ Đã huỷ lệnh sửa.")
+            return
+
+        if data.startswith("clone_sel:"):
+            chosen_id = int(data.split(":", 1)[1])
+            pending = ctx.chat_data.pop("pending_clone_disambig", None)
+            if not pending:
+                await query.edit_message_text("⚠️ Phiên chọn đã hết hạn.")
+                return
+            source = db.get_event(chosen_id)
+            if not source or source.status != "active":
+                await query.edit_message_text("⚠️ Lịch nguồn không còn.")
+                return
+            overrides = _dict_to_overrides(pending.get("overrides", {}))
+            await _preview_clone(query, ctx, source, overrides)
+            return
+
+        if data == "clone_cancel":
+            ctx.chat_data.pop("pending_clone_disambig", None)
+            await query.edit_message_text("❌ Đã huỷ lệnh clone.")
             return
 
         if data.startswith("ls_sel:") or data.startswith("back_det:"):
