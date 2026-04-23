@@ -153,6 +153,8 @@ _HELP_TEXT = (
     "```\n\n"
     "*Cảnh báo trùng lịch:* khi tạo/clone/đổi giờ, nếu overlap với lịch khác, "
     "bot hiện cảnh báo. Chị vẫn confirm được nếu cố ý trùng.\n\n"
+    "*Nhắc lịch tự động:* bot tự nhắc ~30 phút trước mỗi lịch (kể cả buổi lặp). "
+    "Mỗi sáng 7h: digest các lịch trong ngày. Gõ /today để xem agenda hôm nay bất kỳ lúc nào.\n\n"
     "*Kéo thả trên Calendar:* chị kéo thả lịch thoải mái trên Google Calendar UI. "
     "Sau đó gõ `/sync` (lịch mới nhất) hoặc `/sync <id>` — bot sẽ so sánh và cập nhật Zoom + DB theo Calendar. "
     "Khi vào chi tiết qua /list, bot cũng tự phát hiện drift và hiện nút 🔄 Sync."
@@ -171,6 +173,20 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _reject(update)
         return
     await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """On-demand "today's agenda" — same content as the 07:00 daily digest."""
+    if not _is_allowed(update):
+        await _reject(update)
+        return
+    from bot import scheduler  # lazy import to avoid circular
+    today = datetime.now().date().isoformat()
+    items = db.events_on_date(today)
+    text = scheduler._format_digest(today, items)
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
+    )
 
 
 # ── /list ──────────────────────────────────────────────────────────────────────

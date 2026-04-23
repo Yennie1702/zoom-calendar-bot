@@ -27,17 +27,23 @@ from telegram.ext import (
     filters,
 )
 
-from bot import config, handlers
+from bot import config, handlers, scheduler
 
 log = logging.getLogger(__name__)
 
 
 def _build_app() -> Application:
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(config.TELEGRAM_BOT_TOKEN)
+        .post_init(scheduler.start_background_tasks)
+        .build()
+    )
     app.add_handler(CommandHandler("start", handlers.cmd_start))
     app.add_handler(CommandHandler("help", handlers.cmd_help))
     app.add_handler(CommandHandler("list", handlers.cmd_list))
     app.add_handler(CommandHandler("sync", handlers.cmd_sync))
+    app.add_handler(CommandHandler("today", handlers.cmd_today))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text))
     app.add_handler(CallbackQueryHandler(handlers.handle_callback))
     return app

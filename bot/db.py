@@ -71,10 +71,13 @@ class EventRow:
     created_at: str
     updated_at: str
     cancelled_occurrences: list[str] = None
+    reminders_sent: list[str] = None
 
     def __post_init__(self):
         if self.cancelled_occurrences is None:
             self.cancelled_occurrences = []
+        if self.reminders_sent is None:
+            self.reminders_sent = []
 
     @property
     def start_dt(self) -> datetime:
@@ -149,6 +152,17 @@ def _ensure_schema(c) -> None:
         )
     except Exception:  # noqa: BLE001 — both sqlite3 and libsql raise when col exists
         pass
+    # Migration: reminders_sent added 2026-04-23 for 30-min pre-meeting reminders
+    try:
+        c.execute(
+            "ALTER TABLE events ADD COLUMN reminders_sent TEXT DEFAULT '[]'"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    # Meta KV table — used by daily digest + any future singleton state
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT)"
+    )
     c.commit()
     _SCHEMA_APPLIED = True
 
@@ -179,6 +193,14 @@ def _row_to_event(r) -> EventRow:
         cancelled = json.loads(cancelled_raw or "[]")
     except (TypeError, json.JSONDecodeError):
         cancelled = []
+    try:
+        reminders_raw = r["reminders_sent"]
+    except (KeyError, IndexError):
+        reminders_raw = "[]"
+    try:
+        reminders = json.loads(reminders_raw or "[]")
+    except (TypeError, json.JSONDecodeError):
+        reminders = []
     return EventRow(
         id=int(r["id"]),
         topic=r["topic"],
@@ -196,6 +218,7 @@ def _row_to_event(r) -> EventRow:
         created_at=r["created_at"],
         updated_at=r["updated_at"],
         cancelled_occurrences=cancelled,
+        reminders_sent=reminders,
     )
 
 
@@ -348,6 +371,10 @@ def update_event_fields(event_id: int, **fields) -> None:
         fields["cancelled_occurrences"] = json.dumps(
             fields["cancelled_occurrences"], ensure_ascii=False
         )
+    if "reminders_sent" in fields and not isinstance(fields["reminders_sent"], str):
+        fields["reminders_sent"] = json.dumps(
+            fields["reminders_sent"], ensure_ascii=False
+        )
     fields["updated_at"] = _now_iso()
     cols = ", ".join(f"{k} = ?" for k in fields)
     with _conn() as c:
@@ -388,6 +415,83 @@ def _expand_event_starts(row: EventRow) -> list[datetime]:
     starts = [base + timedelta(weeks=i) for i in range(count)]
     cancelled = set(row.cancelled_occurrences or [])
     return [s for s in starts if s.isoformat(timespec="seconds") not in cancelled]
+
+
+# ── Scheduler-facing queries ──────────────────────────────────────────────────
+def upcoming_unreminded(
+    window_from: datetime, window_to: datetime
+) -> list[dict]:
+    """Occurrences starting in [window_from, window_to] that haven't been reminded.
+
+    Returns list of {row: EventRow, occurrence_iso: str}.
+    Recurring series are expanded; cancelled occurrences skipped.
+    """
+    with _conn() as c:
+        raw = c.execute("SELECT * FROM events WHERE status = 'active'").fetchall()
+
+    hits: list[dict] = []
+    for r in raw:
+        ev = _row_to_event(r)
+        reminded = set(ev.reminders_sent or [])
+        for occ_start in _expand_event_starts(ev):
+            if not (window_from <= occ_start <= window_to):
+                continue
+            occ_iso = occ_start.isoformat(timespec="seconds")
+            if occ_iso in reminded:
+                continue
+            hits.append({"row": ev, "occurrence_iso": occ_iso})
+    return hits
+
+
+def mark_reminded(event_id: int, occurrence_iso: str) -> None:
+    row = get_event(event_id)
+    if not row:
+        return
+    if occurrence_iso in (row.reminders_sent or []):
+        return
+    new_list = [*(row.reminders_sent or []), occurrence_iso]
+    update_event_fields(event_id, reminders_sent=new_list)
+
+
+def events_on_date(iso_date: str) -> list[dict]:
+    """All occurrences (active only) whose start date == iso_date.
+
+    Returns list of {row: EventRow, occurrence_iso: str}, sorted by start time.
+    """
+    with _conn() as c:
+        raw = c.execute("SELECT * FROM events WHERE status = 'active'").fetchall()
+
+    hits: list[dict] = []
+    for r in raw:
+        ev = _row_to_event(r)
+        for occ_start in _expand_event_starts(ev):
+            if occ_start.date().isoformat() == iso_date:
+                hits.append({
+                    "row": ev,
+                    "occurrence_iso": occ_start.isoformat(timespec="seconds"),
+                })
+    hits.sort(key=lambda x: x["occurrence_iso"])
+    return hits
+
+
+def get_meta(key: str) -> str | None:
+    with _conn() as c:
+        r = c.execute("SELECT value FROM bot_meta WHERE key = ?", (key,)).fetchone()
+    if r is None:
+        return None
+    try:
+        return r["value"]
+    except (KeyError, IndexError, TypeError):
+        return r[0] if r else None
+
+
+def set_meta(key: str, value: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO bot_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def find_conflicts(
