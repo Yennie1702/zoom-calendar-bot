@@ -16,6 +16,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
+from telegram import BotCommand
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
@@ -32,11 +33,25 @@ DIGEST_HOUR = 7
 TICK_SEC = 60
 
 
+_BOT_COMMANDS = [
+    BotCommand("start", "Bắt đầu + xem hướng dẫn"),
+    BotCommand("help", "Hướng dẫn đầy đủ"),
+    BotCommand("list", "Danh sách lịch (gõ /list tuần này, /list mai…)"),
+    BotCommand("today", "Lịch hôm nay"),
+    BotCommand("sync", "Đồng bộ sau khi kéo thả trên Calendar"),
+]
+
+
 async def start_background_tasks(app) -> None:
-    """post_init hook — start reminder + digest loops once."""
+    """post_init hook — register command menu + start reminder + digest loops once."""
     if getattr(app, "_scheduler_started", False):
         return
     app._scheduler_started = True
+    try:
+        await app.bot.set_my_commands(_BOT_COMMANDS)
+        log.info("Registered %d bot commands for autocomplete", len(_BOT_COMMANDS))
+    except TelegramError:
+        log.exception("set_my_commands failed (non-fatal)")
     asyncio.create_task(reminder_loop(app))
     asyncio.create_task(daily_digest_loop(app))
     log.info("Scheduler started (reminder + daily digest)")
