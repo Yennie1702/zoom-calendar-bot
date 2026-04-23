@@ -1,7 +1,9 @@
 """One-off: send the pinnable help message to chị Yến's chat.
 
+Vì nội dung > 4096 chars (Telegram limit) nên chia thành 2 tin nhắn (Part 1/2 + Part 2/2).
+Chị pin cả 2 tin nhắn để có hướng dẫn đầy đủ.
+
 Run: python scripts/send_pinned_help.py
-After it prints OK, pin that message manually in Telegram.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ def _c(s: str) -> str:
     return f"<code>{html.escape(s)}</code>"
 
 
-HELP = f"""📖 <b>JA Scheduler Bot — Hướng dẫn đầy đủ</b>
+HELP_PART1 = f"""📖 <b>JA Scheduler Bot — Hướng dẫn (1/2)</b>
 <i>Bot ghép Zoom + Google Calendar, chạy 24/7 trên Render.</i>
 
 📌 <b>1. LỆNH NHANH</b>
@@ -100,6 +102,11 @@ Khi /list có lọc theo ngày, bot thêm section "📅 N lịch từ Calendar" 
 • Menu ✏️ 6 field giống lịch bot tạo
 • Notify-email toggle hoạt động bình thường
 
+<i>⬇️ Xem tiếp Part 2/2 (Sửa nhanh · Lịch lặp · Email · Nhắc · Sync · Icons).</i>"""
+
+
+HELP_PART2 = f"""📖 <b>JA Scheduler Bot — Hướng dẫn (2/2)</b>
+
 ⚡ <b>4. SỬA NHANH TỪ CHAT</b> (không cần /list)
 
 <b>4A. Sửa lịch mới nhất</b> — nhắn thẳng:
@@ -163,22 +170,27 @@ Chị kéo thoải mái trên Calendar UI. Sau đó báo bot đồng bộ:
 • /sync chỉ đồng bộ cấp series — kéo 1 instance riêng trên Calendar → dùng luồng "Sửa 1 buổi riêng" qua /list."""
 
 
-def main() -> None:
+def _send(text: str, label: str) -> None:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     r = requests.post(
         url,
         json={
             "chat_id": config.TELEGRAM_ALLOWED_CHAT_ID,
-            "text": HELP,
+            "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         },
         timeout=20,
     )
-    print(f"status={r.status_code}")
-    print(r.text[:500])
+    print(f"[{label}] status={r.status_code} len={len(text)}")
+    print(r.text[:300])
     r.raise_for_status()
-    print("✅ Sent. Chị vào Telegram, giữ tin nhắn đó → Pin.")
+
+
+def main() -> None:
+    _send(HELP_PART1, "Part 1/2")
+    _send(HELP_PART2, "Part 2/2")
+    print("✅ Đã gửi 2 tin nhắn. Chị vào Telegram → giữ từng tin → Pin cả 2.")
 
 
 if __name__ == "__main__":
