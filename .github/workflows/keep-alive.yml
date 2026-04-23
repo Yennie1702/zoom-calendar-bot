@@ -1,0 +1,21 @@
+name: Keep Render service warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render service
+        run: |
+          echo "Pinging at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 https://ja-scheduler-bot.onrender.com/)
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" = "000" ]; then
+            echo "::error::Ping timed out — service may be down"
+            exit 1
+          fi
+          echo "OK — service responded"
