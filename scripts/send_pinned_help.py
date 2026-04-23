@@ -54,11 +54,50 @@ bỏ khách a@x.vn
 xoá lịch''')}
 Target lịch khác: thêm {_c('#id')} (lấy từ /list), VD: {_c('sửa giờ 15h #5')}
 
+🔍 <b>SỬA/XOÁ LỊCH CŨ BẰNG TÊN</b> (không cần nhớ id)
+{_cb('''sửa giờ 15h30 "Tư vấn OKRs" ngày 25/4
+xoá lịch "Tư vấn OKRs" ngày 25/4
+xoá lịch khách lan@abc.com
+sửa thời lượng 45 phút "Mentor MBOs"''')}
+Nhiều lịch khớp → bot hiện list để chị bấm số chọn.
+
+📑 <b>CLONE LỊCH CŨ</b> (copy nhanh rồi chỉnh)
+{_cb('''tạo lịch giống #5
+tạo lịch giống #5 nhưng ngày 27/4 15h
+tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách a@x.vn
+tạo lịch giống #3 nhưng tên "OKRs v2", thêm khách b@y.vn''')}
+
+⚠️ <b>CẢNH BÁO TRÙNG LỊCH</b>
+Khi tạo / clone / đổi giờ, nếu overlap với lịch khác, bot cảnh báo ngay trong preview. Chị vẫn confirm được nếu cố ý trùng.
+
+📧 <b>GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>
+Mỗi lần confirm sửa / xoá, bot hiện 2 lựa chọn:
+• <b>✅ Sửa + gửi mail</b> / <b>✅ Xoá + gửi mail</b> — Google Calendar gửi email update/huỷ cho tất cả khách.
+• <b>✅ Sửa (không mail)</b> / <b>✅ Xoá (không mail)</b> — update/huỷ âm thầm, khách không nhận email.
+Áp dụng cho cả sửa/xoá toàn bộ lịch, 1 buổi riêng của lịch lặp, và xoá toàn bộ series.
+
+⏰ <b>NHẮC LỊCH &amp; DIGEST TỰ ĐỘNG</b>
+• Nhắc ~30 phút trước mỗi lịch (cả buổi lặp) — gửi vào chat này.
+• 07:00 sáng: digest tất cả lịch trong ngày.
+• {_c('/today')} — xem agenda hôm nay bất kỳ lúc nào.
+
 📋 <b>QUẢN LÝ ĐẦY ĐỦ — /list</b>
 • Hiện 10 lịch gần nhất, mỗi lịch 1 nút số
 • Bấm số → chi tiết + nút ✏️ Sửa / 🗑 Xoá
 • ✏️ → menu 6 field: giờ/ngày · thời lượng · thêm/bỏ khách · tên · nội dung
 • 🗑 → confirm → huỷ Zoom + Calendar (khách nhận email huỷ)
+
+🔎 <b>Tìm &amp; lật trang trong /list:</b>
+{_cb('''/list 2                  ← trang 2 (10 lịch/trang)
+/list OKRs               ← lọc theo từ khoá tên/nội dung
+/list khách lan@abc.com  ← lọc theo email khách
+/list tuần này
+/list tuần sau | tuần trước
+/list hôm nay | mai | hôm qua
+/list tháng này | tháng 5 | tháng 5/2026
+/list 27/4               ← ngày cụ thể
+/list 27/4-4/5           ← khoảng ngày
+/list OKRs 2             ← từ khoá + trang''')}
 
 🔁 <b>LỊCH LẶP — XOÁ / SỬA 1 BUỔI RIÊNG</b>
 • Xoá 1 buổi: /list → lịch lặp → 🗑 → "⊘ Chỉ 1 buổi" → chọn buổi
@@ -76,6 +115,7 @@ Bot coi Calendar là nguồn đúng, update Zoom + DB theo.
 • {_c('/start')}, {_c('/help')} — hướng dẫn
 • {_c('/list')} — quản lý 10 lịch gần nhất
 • {_c('/sync [id]')} — đồng bộ sau khi kéo thả
+• {_c('/today')} — digest lịch hôm nay
 
 ⚠️ <b>Lưu ý</b>
 • Chỉ chị Hải Yến nhắn được (chat_id filter).
