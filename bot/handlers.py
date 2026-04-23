@@ -180,7 +180,8 @@ _HELP_TEXT = (
     "• Nhắc ~30 phút trước mỗi lịch (cả buổi lặp) — gửi vào chat này.\n"
     "• 07:00 sáng: digest tất cả lịch trong ngày.\n"
     "• /today — xem agenda hôm nay bất kỳ lúc nào.\n"
-    "• Digest + /list + nhắc giờ thấy <b>cả lịch Calendar không do bot tạo</b> (hiển thị 📅, view-only).\n\n"
+    "• Digest + /list + nhắc giờ thấy <b>cả lịch Calendar không do bot tạo</b> (hiển thị 📅).\n"
+    "• Trong /list: bấm nút <code>E1</code>/<code>E2</code>… để xem/sửa/xoá luôn qua bot.\n\n"
 
     "📋 <b>QUẢN LÝ ĐẦY ĐỦ — /list</b>\n"
     "• Hiện 10 lịch gần nhất, mỗi lịch 1 nút số\n"
@@ -325,15 +326,18 @@ async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
         limit=query.page_size,
         offset=query.offset,
     )
+    externals_shown = externals if query.page == 1 else []
     text = formatter.format_list(
         rows,
         total=total,
         page=query.page,
         page_size=query.page_size,
         query_desc=query.describe_vi(),
-        externals=externals if query.page == 1 else None,
+        externals=externals_shown or None,
     )
-    markup = _paged_list_keyboard(rows, query, total_pages)
+    markup = _paged_list_keyboard(
+        rows, query, total_pages, externals=externals_shown or None,
+    )
 
     # Stash current query so pagination callbacks can re-render
     ctx.chat_data["list_query"] = {
@@ -344,6 +348,24 @@ async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
         "page": query.page,
         "page_size": query.page_size,
     }
+    # Stash externals by index so `ext_sel:<idx>` callbacks can resolve.
+    # Only page 1 shows externals, so clear on other pages to avoid stale picks.
+    if externals_shown:
+        ctx.chat_data["list_externals"] = [
+            {
+                "calendar_event_id": occ.calendar_event_id,
+                "occurrence_iso": occ.occurrence_iso,
+                "duration_min": occ.duration_min,
+                "topic": occ.topic,
+                "agenda": occ.agenda,
+                "attendees": list(occ.attendees),
+                "html_link": occ.html_link,
+                "recurring_source_id": occ.recurring_source_id,
+            }
+            for occ in externals_shown
+        ]
+    else:
+        ctx.chat_data.pop("list_externals", None)
 
     # message_or_query is either a Message (for /list) or a CallbackQuery (for page nav)
     if hasattr(message_or_query, "edit_message_text"):
@@ -366,14 +388,28 @@ def _list_keyboard(rows: list[db.EventRow]) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(keyboard)
 
 
-def _paged_list_keyboard(rows: list[db.EventRow], query, total_pages: int
-                          ) -> InlineKeyboardMarkup | None:
-    """List keyboard with numbered row-pick buttons + page navigation row."""
-    if not rows and total_pages <= 1:
+def _paged_list_keyboard(
+    rows: list[db.EventRow], query, total_pages: int,
+    externals: list | None = None,
+) -> InlineKeyboardMarkup | None:
+    """List keyboard with numbered row-pick buttons + page navigation row.
+
+    DB rows get numbered buttons (callback ls_sel:<id>).
+    External Calendar rows (page 1 only) get `Eℹ` buttons (callback ext_sel:<idx>).
+    """
+    if not rows and total_pages <= 1 and not externals:
         return None
     buttons = [InlineKeyboardButton(str(i), callback_data=f"ls_sel:{r.id}")
                for i, r in enumerate(rows, 1)]
     rows_kb = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+
+    if externals:
+        ext_buttons = [
+            InlineKeyboardButton(f"E{i}", callback_data=f"ext_sel:{i - 1}")
+            for i in range(1, len(externals) + 1)
+        ]
+        for i in range(0, len(ext_buttons), 5):
+            rows_kb.append(ext_buttons[i:i + 5])
 
     nav = []
     if query.page > 1:
@@ -471,6 +507,51 @@ def _delete_occ_confirm_keyboard(event_id: int, idx: int) -> InlineKeyboardMarku
     ])
 
 
+# ── External (Calendar) edit/delete keyboards ─────────────────────────────────
+def _ext_detail_keyboard(idx: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✏️ Sửa", callback_data="ext_ed_menu"),
+            InlineKeyboardButton("🗑 Xoá", callback_data="ext_del_ask"),
+        ],
+        [InlineKeyboardButton("↩️ Quay lại list", callback_data="back_list")],
+    ])
+
+
+def _ext_edit_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🕐 Giờ/ngày", callback_data="ext_ed_f:time"),
+            InlineKeyboardButton("⏱ Thời lượng", callback_data="ext_ed_f:dur"),
+        ],
+        [
+            InlineKeyboardButton("➕ Thêm khách", callback_data="ext_ed_f:att_add"),
+            InlineKeyboardButton("➖ Bỏ khách", callback_data="ext_ed_f:att_rm"),
+        ],
+        [
+            InlineKeyboardButton("🏷 Tên lịch", callback_data="ext_ed_f:topic"),
+            InlineKeyboardButton("🎯 Nội dung", callback_data="ext_ed_f:ag"),
+        ],
+        [InlineKeyboardButton("↩️ Quay lại", callback_data="ext_back")],
+    ])
+
+
+def _ext_edit_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sửa + gửi mail", callback_data="ext_ed_go:n"),
+         InlineKeyboardButton("✅ Sửa (không mail)", callback_data="ext_ed_go:s")],
+        [InlineKeyboardButton("❌ Huỷ", callback_data="ext_ed_no")],
+    ])
+
+
+def _ext_delete_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Xoá + gửi mail", callback_data="ext_del_yes:n"),
+         InlineKeyboardButton("✅ Xoá (không mail)", callback_data="ext_del_yes:s")],
+        [InlineKeyboardButton("❌ Huỷ", callback_data="ext_back")],
+    ])
+
+
 # ── Text handler: create-parse OR edit-value (depending on state) ─────────────
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
@@ -484,10 +565,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         had = any(k in ctx.chat_data for k in
                   ("pending", "pending_edit", "pending_delete", "pending_sync",
                    "edit_mode", "pending_quick_disambig",
-                   "pending_clone_disambig"))
+                   "pending_clone_disambig",
+                   "ext_edit_mode", "pending_ext_edit"))
         for k in ("pending", "pending_edit", "pending_delete",
                   "pending_sync", "edit_mode", "occurrences",
-                  "pending_quick_disambig", "pending_clone_disambig"):
+                  "pending_quick_disambig", "pending_clone_disambig",
+                  "ext_edit_mode", "pending_ext_edit"):
             ctx.chat_data.pop(k, None)
         await update.message.reply_text(
             "✅ Đã huỷ trạng thái chờ." if had else "ℹ️ Không có gì đang chờ."
@@ -498,6 +581,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     edit_mode = ctx.chat_data.get("edit_mode")
     if edit_mode:
         await _handle_edit_value(update, ctx, text, edit_mode)
+        return
+    ext_edit_mode = ctx.chat_data.get("ext_edit_mode")
+    if ext_edit_mode:
+        await _handle_ext_edit_value(update, ctx, text, ext_edit_mode)
         return
 
     # 2) Quick-edit supersedes any pending_edit (newer command wins — better UX
@@ -514,7 +601,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # 3) Pending-edit blocks only non-quick-edit free text
-    if ctx.chat_data.get("pending_edit"):
+    if ctx.chat_data.get("pending_edit") or ctx.chat_data.get("pending_ext_edit"):
         await update.message.reply_text(
             "⚠️ Đang chờ xác nhận sửa. Bấm ✅/❌, nhắn lệnh sửa mới, hoặc nhắn `huỷ`."
         )
@@ -1226,6 +1313,72 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             await query.edit_message_text("❌ Đã huỷ lệnh clone.")
             return
 
+        # ── External (Calendar) edit/delete flow ─────────────────────────────
+        if data.startswith("ext_sel:"):
+            idx = int(data.split(":", 1)[1])
+            await _show_ext_detail(query, ctx, idx)
+            return
+
+        if data == "ext_back":
+            await _show_ext_detail(query, ctx)
+            return
+
+        if data == "ext_ed_menu":
+            occ = ctx.chat_data.get("current_ext")
+            if not occ:
+                await query.edit_message_text("⚠️ Không còn dữ liệu lịch.")
+                return
+            await query.edit_message_text(
+                f"✏️ Sửa lịch Calendar *{occ['topic']}*\nChọn field muốn sửa:",
+                reply_markup=_ext_edit_menu_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data.startswith("ext_ed_f:"):
+            field = data.split(":", 1)[1]
+            if not ctx.chat_data.get("current_ext"):
+                await query.edit_message_text("⚠️ Không còn dữ liệu lịch.")
+                return
+            ctx.chat_data["ext_edit_mode"] = {"field": field}
+            await query.edit_message_text(
+                f"✏️ *{formatter.edit_prompt(field)}*\n_(lịch từ Calendar)_",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data.startswith("ext_ed_go:"):
+            notify = data.endswith(":n")
+            await _do_ext_edit(query, ctx, notify=notify)
+            return
+
+        if data == "ext_ed_no":
+            ctx.chat_data.pop("pending_ext_edit", None)
+            await _show_ext_detail(query, ctx, prefix="❌ Đã huỷ sửa.\n\n")
+            return
+
+        if data == "ext_del_ask":
+            occ = ctx.chat_data.get("current_ext")
+            if not occ:
+                await query.edit_message_text("⚠️ Không còn dữ liệu lịch.")
+                return
+            recur_tag = (
+                " _(đây là 1 buổi của lịch lặp — xoá chỉ ảnh hưởng buổi này)_"
+                if occ.get("recurring_source_id") else ""
+            )
+            await query.edit_message_text(
+                f"🗑 Xoá lịch Calendar *{occ['topic']}*?{recur_tag}\n"
+                f"Khách sẽ nhận email huỷ.",
+                reply_markup=_ext_delete_confirm_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data.startswith("ext_del_yes:"):
+            notify = data.endswith(":n")
+            await _do_ext_delete(query, ctx, notify=notify)
+            return
+
         if data.startswith("ls_sel:") or data.startswith("back_det:"):
             event_id = int(data.split(":", 1)[1])
             await _show_detail(query, event_id)
@@ -1788,6 +1941,207 @@ async def _do_delete_occurrence(
         await query.edit_message_text(
             f"❌ Lỗi huỷ 1 buổi: `{e}`", parse_mode=ParseMode.MARKDOWN
         )
+
+
+# ── External (Calendar) flow ──────────────────────────────────────────────────
+async def _show_ext_detail(query, ctx: ContextTypes.DEFAULT_TYPE,
+                            idx: int | None = None, *, prefix: str = "") -> None:
+    """Render external detail view. If idx given, stash current_ext from list."""
+    if idx is not None:
+        cache = ctx.chat_data.get("list_externals") or []
+        if idx >= len(cache):
+            await query.edit_message_text(
+                "⚠️ Danh sách Calendar đã cũ. Gõ /list lại giúp em."
+            )
+            return
+        ctx.chat_data["current_ext"] = cache[idx]
+    occ = ctx.chat_data.get("current_ext")
+    if not occ:
+        await query.edit_message_text(
+            "⚠️ Không còn dữ liệu lịch Calendar. Gõ /list lại giúp em."
+        )
+        return
+    text = prefix + formatter.format_external_detail(occ)
+    await query.edit_message_text(
+        text,
+        reply_markup=_ext_detail_keyboard(idx or 0),
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True,
+    )
+
+
+def _parse_ext_edit(occ: dict, field: str, text: str):
+    """Same shape as _parse_edit but works on an external occ dict."""
+    from datetime import datetime as _dt
+    base = _dt.fromisoformat(occ["occurrence_iso"])
+    if field == "time":
+        dt = parse_edit_time(text, base=base)
+        return (
+            dt.isoformat(timespec="seconds"),
+            f"🕐 {dt.day}/{dt.month}/{dt.year} {dt.hour:02d}:{dt.minute:02d}",
+        )
+    if field == "dur":
+        n = parse_edit_duration(text)
+        return n, f"⏱ {n} phút"
+    if field == "att_add":
+        emails = parse_edit_emails(text)
+        existing = occ.get("attendees") or []
+        merged = list(dict.fromkeys([*existing, *emails]))
+        added = [e for e in emails if e not in existing]
+        if not added:
+            raise ParseError("Các email này đã có trong lịch rồi.")
+        return (
+            merged,
+            "➕ Thêm: " + ", ".join(added) + f"\n→ Sau khi sửa: {len(merged)} khách",
+        )
+    if field == "att_rm":
+        emails = parse_edit_emails(text)
+        existing = occ.get("attendees") or []
+        remaining = [e for e in existing if e not in emails]
+        removed = [e for e in emails if e in existing]
+        if not removed:
+            raise ParseError("Không thấy email nào trong list để bỏ.")
+        return (
+            remaining,
+            "➖ Bỏ: " + ", ".join(removed) + f"\n→ Còn lại: {len(remaining)} khách",
+        )
+    if field == "topic":
+        v = parse_edit_plain(text, label="Tên lịch")
+        return v, f"🏷 {v}"
+    if field == "ag":
+        v = parse_edit_plain(text, label="Nội dung")
+        return v, f"🎯 {v}"
+    raise ParseError(f"Field không hợp lệ: {field}")
+
+
+async def _handle_ext_edit_value(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str, edit_mode: dict,
+) -> None:
+    occ = ctx.chat_data.get("current_ext")
+    if not occ:
+        ctx.chat_data.pop("ext_edit_mode", None)
+        await update.message.reply_text(
+            "⚠️ Không còn dữ liệu lịch. Gõ /list lại giúp em."
+        )
+        return
+    field = edit_mode["field"]
+    try:
+        new_value, display = _parse_ext_edit(occ, field, text)
+    except ParseError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+    ctx.chat_data.pop("ext_edit_mode", None)
+    ctx.chat_data["pending_ext_edit"] = {
+        "field": field, "new_value": new_value, "display": display,
+    }
+    preview = formatter.format_external_edit_preview(occ, field, display)
+    await update.message.reply_text(
+        preview,
+        reply_markup=_ext_edit_confirm_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+def _apply_ext_edit(occ: dict, field: str, new_value, *, notify: bool = True) -> dict:
+    """Patch the Calendar event. Returns updated occ dict for local cache."""
+    start_local = occ["occurrence_iso"]
+    duration_min = occ["duration_min"]
+    topic = occ["topic"]
+    attendees = list(occ.get("attendees") or [])
+
+    if field == "time":
+        start_local = new_value
+    elif field == "dur":
+        duration_min = int(new_value)
+    elif field == "topic":
+        topic = new_value
+    elif field in ("att_add", "att_rm"):
+        attendees = list(new_value)
+    # agenda goes straight into description; no reformatting needed
+
+    start_dt = datetime.fromisoformat(start_local)
+    end_dt = start_dt + timedelta(minutes=duration_min)
+
+    patch_kwargs: dict = {"notify": notify}
+    if field == "topic":
+        patch_kwargs["summary"] = topic
+    if field == "ag":
+        patch_kwargs["description"] = new_value
+    if field in ("time", "dur"):
+        patch_kwargs["start_local_iso"] = start_local
+        patch_kwargs["end_local_iso"] = end_dt.isoformat(timespec="seconds")
+    if field in ("att_add", "att_rm"):
+        patch_kwargs["attendee_emails"] = attendees
+
+    _get_calendar().patch_event(occ["calendar_event_id"], **patch_kwargs)
+
+    updated = dict(occ)
+    if field == "time":
+        updated["occurrence_iso"] = start_local
+    elif field == "dur":
+        updated["duration_min"] = duration_min
+    elif field == "topic":
+        updated["topic"] = topic
+    elif field == "ag":
+        updated["agenda"] = new_value
+    elif field in ("att_add", "att_rm"):
+        updated["attendees"] = attendees
+    return updated
+
+
+async def _do_ext_edit(query, ctx: ContextTypes.DEFAULT_TYPE, *, notify: bool) -> None:
+    pending = ctx.chat_data.get("pending_ext_edit")
+    occ = ctx.chat_data.get("current_ext")
+    if not pending or not occ:
+        await query.edit_message_text("⚠️ Phiên sửa đã hết hạn.")
+        return
+    mail_note = "Khách sẽ nhận email cập nhật." if notify else "Không gửi email cho khách."
+    await query.edit_message_text(
+        f"⏳ Đang apply thay đổi lên Calendar… ({mail_note})"
+    )
+    try:
+        updated = _apply_ext_edit(
+            occ, pending["field"], pending["new_value"], notify=notify,
+        )
+        ctx.chat_data["current_ext"] = updated
+        ctx.chat_data.pop("pending_ext_edit", None)
+        await query.edit_message_text(
+            f"✅ Đã cập nhật. {mail_note}\n\n"
+            + formatter.format_external_detail(updated),
+            reply_markup=_ext_detail_keyboard(0),
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        log.exception("External edit apply failed")
+        await query.edit_message_text(
+            f"❌ Lỗi apply: `{e}`", parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+async def _do_ext_delete(query, ctx: ContextTypes.DEFAULT_TYPE, *, notify: bool) -> None:
+    occ = ctx.chat_data.get("current_ext")
+    if not occ:
+        await query.edit_message_text("⚠️ Không còn dữ liệu lịch.")
+        return
+    mail_note = "Khách đã nhận email huỷ." if notify else "Không gửi email cho khách."
+    await query.edit_message_text(f"⏳ Đang xoá Calendar event… ({mail_note})")
+    try:
+        _get_calendar().delete_event(occ["calendar_event_id"], notify=notify)
+    except Exception as e:
+        log.exception("External delete failed")
+        await query.edit_message_text(
+            f"❌ Lỗi xoá: `{e}`", parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    ctx.chat_data.pop("current_ext", None)
+    await query.edit_message_text(
+        f"🗑 Đã xoá lịch *{occ['topic']}* trên Calendar. {mail_note}",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("↩️ Quay lại list", callback_data="back_list")]]
+        ),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

@@ -205,12 +205,12 @@ def format_list(
     if externals:
         lines.append("")
         lines.append(f"📅 *{len(externals)} lịch từ Calendar* _(không do bot tạo)_:")
-        for occ in externals:
+        for i, occ in enumerate(externals, 1):
             d = occ.start_dt
             date_str = f"{d.day}/{d.month} {d.hour:02d}:{d.minute:02d}"
             topic = occ.topic if len(occ.topic) <= 36 else occ.topic[:34] + "…"
-            lines.append(f"  · {date_str} · {topic}")
-        lines.append("_Lịch Calendar không bấm số được — chỉnh qua Calendar UI._")
+            lines.append(f"E{i}. {date_str} · {topic}")
+        lines.append("_Bấm nút `E1`/`E2`… để xem và sửa/xoá lịch Calendar._")
 
     return "\n".join(lines)
 
@@ -327,6 +327,45 @@ def format_occurrence_list(
 def format_occurrence_date(occ: dict) -> str:
     d = datetime.fromisoformat(occ["start_local"])
     return f"{_WEEKDAY_VI[d.weekday()]} {d.day}/{d.month} {d.hour:02d}:{d.minute:02d}"
+
+
+def format_external_detail(occ: dict) -> str:
+    """Full detail view for an external Calendar event (not bot-created)."""
+    d = datetime.fromisoformat(occ["occurrence_iso"])
+    end = d + timedelta(minutes=occ["duration_min"])
+    time_line = (
+        f"📅 {_fmt_date(d)}, "
+        f"{d.hour:02d}:{d.minute:02d} - {end.hour:02d}:{end.minute:02d}"
+    )
+    attendees = occ.get("attendees") or []
+    att_line = (
+        "\n".join(f"  • {e}" for e in attendees) if attendees else "  (không)"
+    )
+    link = occ.get("html_link") or ""
+    link_line = f"\n🗓 [Mở Calendar]({link})" if link else ""
+    recur_tag = (
+        "\n🔁 _(1 buổi của lịch lặp — chỉnh chỉ ảnh hưởng buổi này)_"
+        if occ.get("recurring_source_id") else ""
+    )
+    agenda = occ.get("agenda") or "(không)"
+    return (
+        f"🏷 *{occ['topic']}* _(từ Calendar — không do bot tạo)_\n"
+        f"{time_line}\n"
+        f"⏱ {occ['duration_min']} phút\n"
+        f"🎯 {agenda}\n"
+        f"👥 Khách:\n{att_line}"
+        f"{link_line}"
+        f"{recur_tag}"
+    )
+
+
+def format_external_edit_preview(occ: dict, field: str, new_display: str) -> str:
+    label = _EDIT_LABELS.get(field, field)
+    return (
+        f"✏️ *Sửa {label}* — lịch Calendar *{occ['topic']}*:\n\n"
+        f"{new_display}\n\n"
+        f"Chị xác nhận?"
+    )
 
 
 def format_conflict_warning(conflicts: list[tuple[EventRow, str]]) -> str:
