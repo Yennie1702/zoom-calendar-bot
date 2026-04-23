@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 
 class ParseError(Exception):
@@ -321,48 +321,318 @@ _QUICK_KEYWORDS = {
 }
 
 _RE_TARGET_ID = re.compile(r"#(\d+)")
+# Quoted topic: "..." or '...' or “...”
+_RE_TARGET_TOPIC = re.compile(r'["\u201c\']([^"\u201d\']+)["\u201d\']')
+# "ngày 25/4" or "ngay 25/4/2026"
+_RE_TARGET_DATE = re.compile(
+    r"(?:ngày|ngay)\s+(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?",
+    re.IGNORECASE,
+)
+# "khách <email>" or "khach <email>"
+_RE_TARGET_ATTENDEE = re.compile(
+    r"(?:khách|khach)\s+([\w.+-]+@[\w-]+\.[\w.-]+)",
+    re.IGNORECASE,
+)
 
 
-def parse_quick_edit(text: str) -> tuple[str, str, int | None] | None:
+@dataclass
+class TargetSpec:
+    """How to find the event a quick-edit / action refers to."""
+    id: int | None = None
+    topic: str | None = None
+    attendee: str | None = None
+    date: str | None = None  # ISO 'YYYY-MM-DD'
+
+    @property
+    def is_natural(self) -> bool:
+        return any([self.topic, self.attendee, self.date])
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.id or self.is_natural)
+
+
+def parse_quick_edit(text: str) -> tuple[str, str, TargetSpec] | None:
     """Try to match a quick-edit command.
 
-    Returns (field, value_str, target_id_or_None) or None if text isn't one.
+    Returns (field, value_str, target_spec) or None if text isn't one.
     `field` is one of: time, dur, topic, ag, att_add, att_rm, delete.
+
+    Target can be:
+      - empty    → use latest-created in this chat
+      - id       → `#42`
+      - natural  → quoted "topic" + optional `ngày DD/MM` + optional `khách x@y`
     """
     raw = text.strip()
     if not raw:
         return None
 
-    # Extract optional #<id>
-    target_id: int | None = None
+    # 1) Strip #<id> first — it never conflicts with verbs
+    target = TargetSpec()
     m_id = _RE_TARGET_ID.search(raw)
     if m_id:
-        target_id = int(m_id.group(1))
+        target.id = int(m_id.group(1))
         raw = (raw[: m_id.start()] + raw[m_id.end():]).strip()
 
+    # 2) Find verb (longest prefix) before pulling other target specifiers —
+    #    otherwise "thêm khách a@x.vn" would eat `khách a@x.vn` as a target.
     low = raw.lower()
-    # Find the longest matching (verb, object) prefix
     matched_field = None
     matched_len = 0
-    for (verb, obj), field in _QUICK_KEYWORDS.items():
+    for (verb, obj), fld in _QUICK_KEYWORDS.items():
         pref = f"{verb} {obj}"
         if low.startswith(pref):
-            # Ensure word boundary (next char is space, end, or punctuation)
             end = len(pref)
             if end == len(low) or low[end] in " :,\t\n":
                 if end > matched_len:
-                    matched_field = field
+                    matched_field = fld
                     matched_len = end
     if matched_field is None:
         return None
 
-    value = raw[matched_len:].lstrip(" :,\t").strip()
-    # "xoá lịch" can take no value
+    rest = raw[matched_len:].lstrip(" :,\t").strip()
+
+    # 3) From the rest, extract natural target specifiers (date, attendee-after-value, topic)
+    rest, natural = _extract_natural_target(rest)
+    target.topic = natural.topic or target.topic
+    target.attendee = natural.attendee or target.attendee
+    target.date = natural.date or target.date
+
     if matched_field == "delete":
-        return ("delete", "", target_id)
-    if not value:
+        # "xoá lịch" may have no value left
+        return ("delete", "", target)
+    if not rest:
         raise ParseError(
             "Em thấy lệnh sửa nhưng chưa có giá trị mới. "
             "VD: `sửa giờ 15h30`, `thêm khách a@x.vn`."
         )
-    return (matched_field, value, target_id)
+    return (matched_field, rest, target)
+
+
+def _extract_natural_target(raw: str) -> tuple[str, TargetSpec]:
+    """Pull topic / ngày / khách specifiers out of `raw` — id handled separately."""
+    spec = TargetSpec()
+
+    m = _RE_TARGET_DATE.search(raw)
+    if m:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = _resolve_year(m.group(3), month, day)
+        spec.date = f"{year:04d}-{month:02d}-{day:02d}"
+        raw = raw[: m.start()] + raw[m.end():]
+
+    m = _RE_TARGET_ATTENDEE.search(raw)
+    if m:
+        spec.attendee = m.group(1).lower()
+        raw = raw[: m.start()] + raw[m.end():]
+
+    m = _RE_TARGET_TOPIC.search(raw)
+    if m:
+        spec.topic = m.group(1).strip()
+        raw = raw[: m.start()] + raw[m.end():]
+
+    return raw.strip(), spec
+
+
+# ── /list arg parser ──────────────────────────────────────────────────────────
+@dataclass
+class ListQuery:
+    """Filter + pagination spec for /list."""
+    topic: str | None = None
+    attendee: str | None = None
+    date_from: str | None = None  # ISO
+    date_to: str | None = None    # ISO inclusive
+    page: int = 1
+    page_size: int = 10
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
+
+    @property
+    def has_filter(self) -> bool:
+        return any([self.topic, self.attendee, self.date_from, self.date_to])
+
+    def describe_vi(self) -> str:
+        """Short Vietnamese description of active filters — for list header."""
+        parts: list[str] = []
+        if self.topic:
+            parts.append(f'từ khoá "{self.topic}"')
+        if self.attendee:
+            parts.append(f"khách {self.attendee}")
+        if self.date_from and self.date_to and self.date_from == self.date_to:
+            parts.append(f"ngày {_fmt_iso_date_vi(self.date_from)}")
+        elif self.date_from and self.date_to:
+            parts.append(
+                f"từ {_fmt_iso_date_vi(self.date_from)} đến {_fmt_iso_date_vi(self.date_to)}"
+            )
+        elif self.date_from:
+            parts.append(f"từ {_fmt_iso_date_vi(self.date_from)}")
+        elif self.date_to:
+            parts.append(f"đến {_fmt_iso_date_vi(self.date_to)}")
+        return " · ".join(parts)
+
+
+def _fmt_iso_date_vi(iso: str) -> str:
+    y, m, d = iso.split("-")
+    return f"{int(d)}/{int(m)}/{y}"
+
+
+# Explicit date range like "27/4-4/5" or "27/4/2026 - 4/5/2026"
+_RE_DATE_RANGE = re.compile(
+    r"(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?"
+    r"\s*[-–—]\s*"
+    r"(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?"
+)
+_RE_SINGLE_DATE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?$")
+# "tháng 5" or "tháng 5/2026"
+_RE_MONTH = re.compile(
+    r"(?:tháng|thang)\s+(\d{1,2})(?:[/\-.](\d{2,4}))?",
+    re.IGNORECASE,
+)
+_RE_PAGE = re.compile(r"^(?:p|trang)?\s*(\d{1,3})$", re.IGNORECASE)
+
+
+def _week_range(base: date, offset_weeks: int = 0) -> tuple[str, str]:
+    """Return (from_iso, to_iso) for the ISO week containing base+offset."""
+    target = base + timedelta(weeks=offset_weeks)
+    # Monday of that week
+    monday = target - timedelta(days=target.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday.isoformat(), sunday.isoformat()
+
+
+def _month_range(year: int, month: int) -> tuple[str, str]:
+    first = date(year, month, 1)
+    # Last day = first of next month minus 1
+    if month == 12:
+        nxt = date(year + 1, 1, 1)
+    else:
+        nxt = date(year, month + 1, 1)
+    last = nxt - timedelta(days=1)
+    return first.isoformat(), last.isoformat()
+
+
+def parse_list_args(raw: str) -> ListQuery:
+    """Parse the argument string passed to /list.
+
+    Accepted forms (all optional, can combine — page number always last):
+      /list                       → page 1, no filter
+      /list 2                     → page 2
+      /list OKRs                  → topic contains 'OKRs'
+      /list khách lan@abc.com     → attendee filter
+      /list tuần này              → current ISO week
+      /list tuần sau / tuần trước → next/prev week
+      /list hôm nay / mai / hôm qua
+      /list tháng này             → current month
+      /list tháng 5               → May (nearest future if past)
+      /list tháng 5/2026
+      /list 27/4                  → single day
+      /list 27/4-4/5              → range
+      /list 27/4/2026-4/5/2026
+    """
+    q = ListQuery()
+    s = raw.strip()
+    if not s:
+        return q
+
+    low = s.lower()
+
+    # 1) Page number alone?
+    m = _RE_PAGE.match(s)
+    if m:
+        q.page = max(1, int(m.group(1)))
+        return q
+
+    today = date.today()
+
+    # 2) Keyword buckets first (consume if matched)
+    replacements: list[tuple[re.Pattern, str]] = []
+
+    if re.search(r"\b(tuần này|tuan nay)\b", low):
+        q.date_from, q.date_to = _week_range(today, 0)
+        s = re.sub(r"\b(tuần này|tuan nay)\b", "", s, flags=re.IGNORECASE).strip()
+    elif re.search(r"\b(tuần sau|tuan sau|tuần tới|tuan toi)\b", low):
+        q.date_from, q.date_to = _week_range(today, 1)
+        s = re.sub(
+            r"\b(tuần sau|tuan sau|tuần tới|tuan toi)\b", "", s, flags=re.IGNORECASE
+        ).strip()
+    elif re.search(r"\b(tuần trước|tuan truoc)\b", low):
+        q.date_from, q.date_to = _week_range(today, -1)
+        s = re.sub(r"\b(tuần trước|tuan truoc)\b", "", s, flags=re.IGNORECASE).strip()
+
+    low = s.lower()
+    if re.search(r"\b(hôm nay|hom nay|today)\b", low):
+        q.date_from = q.date_to = today.isoformat()
+        s = re.sub(
+            r"\b(hôm nay|hom nay|today)\b", "", s, flags=re.IGNORECASE
+        ).strip()
+    elif re.search(r"\b(ngày mai|ngay mai|mai)\b", low):
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        q.date_from = q.date_to = tomorrow
+        s = re.sub(
+            r"\b(ngày mai|ngay mai|mai)\b", "", s, flags=re.IGNORECASE
+        ).strip()
+    elif re.search(r"\b(hôm qua|hom qua|yesterday)\b", low):
+        yesterday = (today - timedelta(days=1)).isoformat()
+        q.date_from = q.date_to = yesterday
+        s = re.sub(
+            r"\b(hôm qua|hom qua|yesterday)\b", "", s, flags=re.IGNORECASE
+        ).strip()
+
+    low = s.lower()
+    if re.search(r"\b(tháng này|thang nay)\b", low):
+        q.date_from, q.date_to = _month_range(today.year, today.month)
+        s = re.sub(r"\b(tháng này|thang nay)\b", "", s, flags=re.IGNORECASE).strip()
+    else:
+        m = _RE_MONTH.search(s)
+        if m:
+            month = int(m.group(1))
+            year_raw = m.group(2)
+            year = _resolve_year(year_raw, month, 1)
+            q.date_from, q.date_to = _month_range(year, month)
+            s = (s[: m.start()] + s[m.end():]).strip()
+
+    # 3) Explicit date range / single date
+    m = _RE_DATE_RANGE.search(s)
+    if m and not q.date_from:
+        d1 = int(m.group(1)); mo1 = int(m.group(2))
+        y1 = _resolve_year(m.group(3), mo1, d1)
+        d2 = int(m.group(4)); mo2 = int(m.group(5))
+        y2_raw = m.group(6)
+        # If end year not given, reuse start year
+        y2 = (int(y2_raw) + 2000 if y2_raw and int(y2_raw) < 100
+              else int(y2_raw) if y2_raw else y1)
+        q.date_from = f"{y1:04d}-{mo1:02d}-{d1:02d}"
+        q.date_to = f"{y2:04d}-{mo2:02d}-{d2:02d}"
+        s = (s[: m.start()] + s[m.end():]).strip()
+    else:
+        ms = _RE_SINGLE_DATE.match(s)
+        if ms and not q.date_from:
+            d1 = int(ms.group(1)); mo1 = int(ms.group(2))
+            y1 = _resolve_year(ms.group(3), mo1, d1)
+            iso = f"{y1:04d}-{mo1:02d}-{d1:02d}"
+            q.date_from = q.date_to = iso
+            s = ""
+
+    # 4) 'khách <email>' attendee filter
+    m = _RE_TARGET_ATTENDEE.search(s)
+    if m:
+        q.attendee = m.group(1).lower()
+        s = (s[: m.start()] + s[m.end():]).strip()
+
+    # 5) trailing page number — "/list OKRs 2"
+    tokens = s.split()
+    if tokens:
+        last = tokens[-1]
+        if last.isdigit() and len(last) <= 3:
+            q.page = max(1, int(last))
+            tokens = tokens[:-1]
+            s = " ".join(tokens).strip()
+
+    # 6) whatever's left is the topic keyword
+    leftover = s.strip().strip('"\u201c\u201d\'').strip()
+    if leftover:
+        q.topic = leftover
+
+    return q

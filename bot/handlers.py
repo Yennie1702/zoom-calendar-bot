@@ -26,11 +26,13 @@ from bot import config, db, formatter
 from bot.calendar_client import CalendarClient
 from bot.parser import (
     ParseError,
+    TargetSpec,
     parse_command,
     parse_edit_duration,
     parse_edit_emails,
     parse_edit_plain,
     parse_edit_time,
+    parse_list_args,
     parse_quick_edit,
 )
 from bot.zoom_client import ZoomClient, build_weekly_recurrence
@@ -117,6 +119,27 @@ _HELP_TEXT = (
     "```\n\n"
     "*Quản lý đầy đủ:* gõ /list để xem 10 lịch gần nhất, bấm số để vào chi tiết / sửa / xoá "
     "(bao gồm xoá hoặc sửa 1 buổi trong lịch lặp).\n\n"
+    "*Tìm & lật trang trong /list:*\n"
+    "```\n"
+    "/list 2                  ← trang 2 (mỗi trang 10 lịch)\n"
+    "/list OKRs               ← lọc theo từ khoá tên/nội dung\n"
+    "/list khách lan@abc.com  ← lọc theo email khách\n"
+    "/list tuần này           ← trong tuần hiện tại\n"
+    "/list tuần sau | tuần trước\n"
+    "/list hôm nay | mai | hôm qua\n"
+    "/list tháng này | tháng 5 | tháng 5/2026\n"
+    "/list 27/4               ← ngày cụ thể\n"
+    "/list 27/4-4/5           ← khoảng ngày\n"
+    "/list OKRs 2             ← từ khoá + trang (trang luôn là số cuối)\n"
+    "```\n\n"
+    "*Sửa/xoá lịch cũ bằng tên (không cần nhớ id):*\n"
+    "```\n"
+    "sửa giờ 15h30 \"Tư vấn OKRs\" ngày 25/4\n"
+    "xoá lịch \"Tư vấn OKRs\" ngày 25/4\n"
+    "xoá lịch khách lan@abc.com\n"
+    "sửa thời lượng 45 phút \"Mentor MBOs\"\n"
+    "```\n"
+    "Nếu nhiều lịch khớp → bot hiện list để chị bấm số chọn.\n\n"
     "*Kéo thả trên Calendar:* chị kéo thả lịch thoải mái trên Google Calendar UI. "
     "Sau đó gõ `/sync` (lịch mới nhất) hoặc `/sync <id>` — bot sẽ so sánh và cập nhật Zoom + DB theo Calendar. "
     "Khi vào chi tiết qua /list, bot cũng tự phát hiện drift và hiện nút 🔄 Sync."
@@ -138,14 +161,81 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── /list ──────────────────────────────────────────────────────────────────────
-async def cmd_list(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show paginated / filtered list. Without args → legacy "10 lịch gần nhất"."""
     if not _is_allowed(update):
         await _reject(update)
         return
-    rows = db.list_recent(limit=10)
-    text = formatter.format_list(rows)
-    markup = _list_keyboard(rows)
-    await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+
+    raw_args = " ".join(ctx.args or []).strip() if hasattr(ctx, "args") else ""
+    if not raw_args:
+        # Legacy path: no pagination header, preserves exact old UX
+        rows = db.list_recent(limit=10)
+        text = formatter.format_list(rows)
+        markup = _list_keyboard(rows)
+        ctx.chat_data.pop("list_query", None)
+        await update.message.reply_text(
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    try:
+        query = parse_list_args(raw_args)
+    except ParseError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        return
+
+    await _render_list_query(update.message, ctx, query)
+
+
+async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
+                              query) -> None:
+    """Shared renderer for /list + pagination callbacks. Works with Message or CallbackQuery."""
+    total = db.count_events(
+        topic_contains=query.topic,
+        attendee_contains=query.attendee,
+        date_from=query.date_from,
+        date_to=query.date_to,
+    )
+    total_pages = max(1, (total + query.page_size - 1) // query.page_size)
+    if query.page > total_pages:
+        query.page = total_pages
+    rows = db.search_events(
+        topic_contains=query.topic,
+        attendee_contains=query.attendee,
+        date_from=query.date_from,
+        date_to=query.date_to,
+        limit=query.page_size,
+        offset=query.offset,
+    )
+    text = formatter.format_list(
+        rows,
+        total=total,
+        page=query.page,
+        page_size=query.page_size,
+        query_desc=query.describe_vi(),
+    )
+    markup = _paged_list_keyboard(rows, query, total_pages)
+
+    # Stash current query so pagination callbacks can re-render
+    ctx.chat_data["list_query"] = {
+        "topic": query.topic,
+        "attendee": query.attendee,
+        "date_from": query.date_from,
+        "date_to": query.date_to,
+        "page": query.page,
+        "page_size": query.page_size,
+    }
+
+    # message_or_query is either a Message (for /list) or a CallbackQuery (for page nav)
+    if hasattr(message_or_query, "edit_message_text"):
+        await message_or_query.edit_message_text(
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await message_or_query.reply_text(
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
 
 
 def _list_keyboard(rows: list[db.EventRow]) -> InlineKeyboardMarkup | None:
@@ -156,6 +246,42 @@ def _list_keyboard(rows: list[db.EventRow]) -> InlineKeyboardMarkup | None:
                for i, r in enumerate(rows, 1)]
     keyboard = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
     return InlineKeyboardMarkup(keyboard)
+
+
+def _paged_list_keyboard(rows: list[db.EventRow], query, total_pages: int
+                          ) -> InlineKeyboardMarkup | None:
+    """List keyboard with numbered row-pick buttons + page navigation row."""
+    if not rows and total_pages <= 1:
+        return None
+    buttons = [InlineKeyboardButton(str(i), callback_data=f"ls_sel:{r.id}")
+               for i, r in enumerate(rows, 1)]
+    rows_kb = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+
+    nav = []
+    if query.page > 1:
+        nav.append(InlineKeyboardButton("◀ Trước", callback_data=f"lp:{query.page - 1}"))
+    nav.append(InlineKeyboardButton(
+        f"· {query.page}/{total_pages} ·", callback_data="lp_noop"
+    ))
+    if query.page < total_pages:
+        nav.append(InlineKeyboardButton("Sau ▶", callback_data=f"lp:{query.page + 1}"))
+    if nav:
+        rows_kb.append(nav)
+    return InlineKeyboardMarkup(rows_kb) if rows_kb else None
+
+
+def _query_from_chat_data(ctx: ContextTypes.DEFAULT_TYPE):
+    """Restore a ListQuery from chat_data (for pagination callbacks)."""
+    from bot.parser import ListQuery
+    d = ctx.chat_data.get("list_query") or {}
+    return ListQuery(
+        topic=d.get("topic"),
+        attendee=d.get("attendee"),
+        date_from=d.get("date_from"),
+        date_to=d.get("date_to"),
+        page=int(d.get("page", 1)),
+        page_size=int(d.get("page_size", 10)),
+    )
 
 
 def _detail_keyboard(
@@ -238,9 +364,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # 0) Escape hatch: "huỷ" / "hủy" / "bỏ" / "cancel" clears any pending state.
     if low in {"huỷ", "hủy", "bỏ", "bo", "huy", "cancel", "/cancel"}:
         had = any(k in ctx.chat_data for k in
-                  ("pending", "pending_edit", "pending_delete", "pending_sync", "edit_mode"))
+                  ("pending", "pending_edit", "pending_delete", "pending_sync",
+                   "edit_mode", "pending_quick_disambig"))
         for k in ("pending", "pending_edit", "pending_delete",
-                  "pending_sync", "edit_mode", "occurrences"):
+                  "pending_sync", "edit_mode", "occurrences",
+                  "pending_quick_disambig"):
             ctx.chat_data.pop(k, None)
         await update.message.reply_text(
             "✅ Đã huỷ trạng thái chờ." if had else "ℹ️ Không có gì đang chờ."
@@ -476,7 +604,7 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         raw = args[0].lstrip("#")
         if raw.isdigit():
             target_id = int(raw)
-    row = _resolve_target(ctx, target_id)
+    row = _resolve_target(ctx, target_id if target_id is not None else None)
     if row is None:
         await update.message.reply_text(
             "⚠️ Không tìm thấy lịch. Gõ `/sync <id>` hoặc /list.",
@@ -517,16 +645,41 @@ async def _handle_quick_edit(
     ctx: ContextTypes.DEFAULT_TYPE,
     field: str,
     value: str,
-    target_id: int | None,
+    target: TargetSpec,
 ) -> None:
-    """Resolve target event (id from #N or latest), then preview + confirm."""
-    row = _resolve_target(ctx, target_id)
-    if row is None:
+    """Resolve target event (id / natural spec / latest), then preview + confirm.
+
+    Natural-spec branches:
+      - exactly 1 match → proceed like an id target
+      - 0 matches       → ask chị dùng /list hoặc #id
+      - N>1 matches     → show disambiguation list, chị bấm số để chọn
+    """
+    candidates = _resolve_targets(ctx, target)
+    if not candidates:
         await update.message.reply_text(
-            "⚠️ Không tìm thấy lịch để sửa. "
-            "Dùng `#id` để chỉ định (VD `sửa giờ 15h #3`) hoặc gõ /list."
+            "⚠️ Không tìm thấy lịch khớp. "
+            "Thử `#id` (VD `sửa giờ 15h #3`), thêm `\"tên lịch\"` hoặc `ngày DD/MM`, "
+            "hoặc gõ /list để xem lại."
         )
         return
+    if len(candidates) > 1:
+        await _show_quick_edit_disambig(update, ctx, field, value, candidates)
+        return
+
+    await _apply_quick_edit_to_row(update, ctx, candidates[0], field, value)
+
+
+async def _apply_quick_edit_to_row(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    row: db.EventRow,
+    field: str,
+    value: str,
+) -> None:
+    """Preview + confirm flow once the target row is known.
+
+    Used by _handle_quick_edit (1-match natural path) and the disambig callback."""
+    reply = update.effective_message
 
     if field == "delete":
         ctx.chat_data["pending_delete"] = {"event_id": row.id}
@@ -537,7 +690,7 @@ async def _handle_quick_edit(
                 "\n\n⚠️ Đây là lịch lặp. Xoá tại đây sẽ huỷ *toàn bộ series*. "
                 "Muốn huỷ 1 buổi thôi thì /list → bấm lịch → 🗑 → *Chỉ 1 buổi*."
             )
-        await update.message.reply_text(
+        await reply.reply_text(
             f"🗑 Xoá lịch sau?\n\n{detail}{note}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Xoá + gửi mail", callback_data=f"del_all:{row.id}:n"),
@@ -552,7 +705,7 @@ async def _handle_quick_edit(
     try:
         new_value, display = _parse_edit(row, field, value)
     except ParseError as e:
-        await update.message.reply_text(f"⚠️ {e}")
+        await reply.reply_text(f"⚠️ {e}")
         return
 
     ctx.chat_data["pending_edit"] = {
@@ -562,26 +715,85 @@ async def _handle_quick_edit(
         "display": display,
     }
     preview = formatter.format_edit_preview(row, field, display)
-    await update.message.reply_text(
+    await reply.reply_text(
         preview,
         reply_markup=_edit_confirm_keyboard(),
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-def _resolve_target(ctx: ContextTypes.DEFAULT_TYPE, target_id: int | None) -> db.EventRow | None:
-    if target_id is not None:
-        row = db.get_event(target_id)
+def _resolve_target(
+    ctx: ContextTypes.DEFAULT_TYPE, target: int | TargetSpec | None
+) -> db.EventRow | None:
+    """Single-row resolver. For natural specs with many matches returns the *first* —
+    callers that need disambiguation use `_resolve_targets` instead."""
+    if isinstance(target, int):
+        target = TargetSpec(id=target)
+    rows = _resolve_targets(ctx, target)
+    return rows[0] if rows else None
+
+
+def _resolve_targets(
+    ctx: ContextTypes.DEFAULT_TYPE, target: TargetSpec | None
+) -> list[db.EventRow]:
+    """Return every active event matching `target`.
+
+    - target None / empty → latest in this chat, fallback latest DB row.
+    - target.id           → exact lookup.
+    - target natural      → search_events with filters (topic/attendee/date).
+    """
+    if target is None or target.is_empty:
+        last_id = ctx.chat_data.get("last_created_id")
+        if last_id:
+            row = db.get_event(last_id)
+            if row and row.status == "active":
+                return [row]
+        row = db.latest_created()
+        return [row] if row else []
+
+    if target.id is not None:
+        row = db.get_event(target.id)
         if row and row.status == "active":
-            return row
-        return None
-    # No explicit #id → use last-created in this chat, fallback to DB latest
-    last_id = ctx.chat_data.get("last_created_id")
-    if last_id:
-        row = db.get_event(last_id)
-        if row and row.status == "active":
-            return row
-    return db.latest_created()
+            return [row]
+        return []
+
+    return db.search_events(
+        topic_contains=target.topic,
+        attendee_contains=target.attendee,
+        date_from=target.date,
+        date_to=target.date,
+        limit=20,
+    )
+
+
+async def _show_quick_edit_disambig(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    field: str,
+    value: str,
+    candidates: list[db.EventRow],
+) -> None:
+    """When a natural-target quick-edit matches >1 lịch, let chị pick one."""
+    ctx.chat_data["pending_quick_disambig"] = {
+        "field": field, "value": value,
+        "candidate_ids": [r.id for r in candidates],
+    }
+    action_label = {
+        "delete": "xoá", "time": "đổi giờ/ngày", "dur": "đổi thời lượng",
+        "topic": "đổi tên", "ag": "đổi nội dung",
+        "att_add": "thêm khách", "att_rm": "bỏ khách",
+    }.get(field, "sửa")
+    text = formatter.format_candidate_list(candidates, action_label)
+    buttons = [
+        InlineKeyboardButton(str(i), callback_data=f"qd_sel:{r.id}")
+        for i, r in enumerate(candidates, 1)
+    ]
+    rows_kb = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+    rows_kb.append([InlineKeyboardButton("❌ Huỷ", callback_data="qd_cancel")])
+    await update.message.reply_text(
+        text, reply_markup=InlineKeyboardMarkup(rows_kb),
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 # ── Occurrence helpers (recurring series — single-buổi ops) ────────────────────
@@ -666,12 +878,51 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         if data == "back_list":
+            # Prefer restoring paged/filtered list if one is active, else legacy view
+            if ctx.chat_data.get("list_query"):
+                await _render_list_query(query, ctx, _query_from_chat_data(ctx))
+                return
             rows = db.list_recent(limit=10)
             await query.edit_message_text(
                 formatter.format_list(rows),
                 reply_markup=_list_keyboard(rows),
                 parse_mode=ParseMode.MARKDOWN,
             )
+            return
+
+        if data == "lp_noop":
+            return
+
+        if data.startswith("lp:"):
+            page = int(data.split(":", 1)[1])
+            q = _query_from_chat_data(ctx)
+            q.page = max(1, page)
+            await _render_list_query(query, ctx, q)
+            return
+
+        if data.startswith("qd_sel:"):
+            chosen_id = int(data.split(":", 1)[1])
+            pending = ctx.chat_data.pop("pending_quick_disambig", None)
+            if not pending:
+                await query.edit_message_text("⚠️ Phiên chọn đã hết hạn.")
+                return
+            field = pending["field"]
+            value = pending["value"]
+            row = db.get_event(chosen_id)
+            if not row or row.status != "active":
+                await query.edit_message_text("⚠️ Lịch đã không còn.")
+                return
+            # Collapse disambig view + re-run quick-edit flow on chosen row
+            await query.edit_message_text(
+                f"✅ Đã chọn lịch id={chosen_id}: *{row.topic}* — đang xử lý…",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            await _apply_quick_edit_to_row(update, ctx, row, field, value)
+            return
+
+        if data == "qd_cancel":
+            ctx.chat_data.pop("pending_quick_disambig", None)
+            await query.edit_message_text("❌ Đã huỷ lệnh sửa.")
             return
 
         if data.startswith("ls_sel:") or data.startswith("back_det:"):

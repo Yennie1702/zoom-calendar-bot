@@ -244,6 +244,90 @@ def list_recent(limit: int = 10, *, active_only: bool = True) -> list[EventRow]:
     return [_row_to_event(r) for r in rows]
 
 
+def search_events(
+    *,
+    topic_contains: str | None = None,
+    attendee_contains: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    active_only: bool = True,
+    limit: int = 10,
+    offset: int = 0,
+) -> list[EventRow]:
+    """Filter events by topic keyword / attendee substring / date range.
+
+    - `topic_contains`: case-insensitive LIKE against topic + agenda.
+    - `attendee_contains`: substring match inside the JSON attendees column
+      (good enough — emails don't contain JSON metacharacters).
+    - `date_from` / `date_to`: ISO date strings ('YYYY-MM-DD'), inclusive.
+      Compared against `date(start_local)` so full-day range works.
+    - Results sorted by start_local DESC (newest first) for consistency with /list.
+    """
+    where = []
+    params: list = []
+    if active_only:
+        where.append("status = 'active'")
+    if topic_contains:
+        where.append("(lower(topic) LIKE ? OR lower(agenda) LIKE ?)")
+        needle = f"%{topic_contains.lower()}%"
+        params.extend([needle, needle])
+    if attendee_contains:
+        where.append("lower(attendees) LIKE ?")
+        params.append(f"%{attendee_contains.lower()}%")
+    if date_from:
+        where.append("date(start_local) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("date(start_local) <= ?")
+        params.append(date_to)
+
+    q = "SELECT * FROM events"
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    q += " ORDER BY datetime(start_local) DESC, id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    with _conn() as c:
+        rows = c.execute(q, tuple(params)).fetchall()
+    return [_row_to_event(r) for r in rows]
+
+
+def count_events(
+    *,
+    topic_contains: str | None = None,
+    attendee_contains: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    active_only: bool = True,
+) -> int:
+    """Count rows matching same filter spec as search_events — used for pagination."""
+    where = []
+    params: list = []
+    if active_only:
+        where.append("status = 'active'")
+    if topic_contains:
+        where.append("(lower(topic) LIKE ? OR lower(agenda) LIKE ?)")
+        needle = f"%{topic_contains.lower()}%"
+        params.extend([needle, needle])
+    if attendee_contains:
+        where.append("lower(attendees) LIKE ?")
+        params.append(f"%{attendee_contains.lower()}%")
+    if date_from:
+        where.append("date(start_local) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("date(start_local) <= ?")
+        params.append(date_to)
+
+    q = "SELECT COUNT(*) AS n FROM events"
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    with _conn() as c:
+        r = c.execute(q, tuple(params)).fetchone()
+    if r is None:
+        return 0
+    return int(r["n"] if hasattr(r, "keys") or hasattr(r, "__getitem__") else r[0])
+
+
 def get_event(event_id: int) -> EventRow | None:
     with _conn() as c:
         r = c.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()

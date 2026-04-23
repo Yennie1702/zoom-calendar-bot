@@ -159,12 +159,59 @@ def format_event_summary(row: EventRow) -> str:
     return f"{tag} {date} · {topic}"
 
 
-def format_list(rows: list[EventRow]) -> str:
+def format_list(
+    rows: list[EventRow],
+    *,
+    total: int | None = None,
+    page: int = 1,
+    page_size: int = 10,
+    query_desc: str = "",
+) -> str:
+    """Render /list output.
+
+    Keeps the legacy "10 lịch gần nhất" header when called without extra args so
+    older callers and the back_list callback display identically. When pagination
+    metadata is supplied, header shows page + filter summary.
+    """
+    if total is None and page == 1 and page_size == 10 and not query_desc:
+        if not rows:
+            return "📭 Chưa có lịch nào trong DB."
+        lines = ["📋 *10 lịch gần nhất* (chọn số để xem/sửa):\n"]
+        for i, r in enumerate(rows, 1):
+            lines.append(f"{i}. {format_event_summary(r)}")
+        return "\n".join(lines)
+
     if not rows:
-        return "📭 Chưa có lịch nào trong DB."
-    lines = ["📋 *10 lịch gần nhất* (chọn số để xem/sửa):\n"]
+        base = "📭 Không có lịch nào khớp."
+        if query_desc:
+            base += f"\n🔍 {query_desc}"
+        return base
+
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else page
+    header = f"📋 *Lịch* (trang {page}/{total_pages}"
+    if total is not None:
+        header += f", {total} lịch"
+    header += ") — chọn số để xem/sửa"
+    if query_desc:
+        header += f"\n🔍 {query_desc}"
+    header += ":\n"
+
+    lines = [header]
+    start_idx = (page - 1) * page_size
     for i, r in enumerate(rows, 1):
-        lines.append(f"{i}. {format_event_summary(r)}")
+        lines.append(f"{i}. {format_event_summary(r)} · id=`{r.id}`")
+    return "\n".join(lines)
+
+
+def format_candidate_list(rows: list[EventRow], action_label: str) -> str:
+    """List header for disambiguation when a natural-target command matches >1 lịch."""
+    header = (
+        f"🔎 Tìm thấy *{len(rows)} lịch* khớp điều kiện. "
+        f"Chị chọn lịch cần {action_label}:\n"
+    )
+    lines = [header]
+    for i, r in enumerate(rows, 1):
+        lines.append(f"{i}. {format_event_summary(r)} · id=`{r.id}`")
     return "\n".join(lines)
 
 
