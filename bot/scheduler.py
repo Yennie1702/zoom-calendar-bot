@@ -19,8 +19,9 @@ from datetime import datetime, timedelta
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
-from bot import config, db
+from bot import config, db, external_events
 from bot.db import EventRow
+from bot.external_events import ExternalOccurrence
 
 log = logging.getLogger(__name__)
 
@@ -55,10 +56,9 @@ async def _reminder_tick(app) -> None:
     now = datetime.now()
     lower = now + timedelta(minutes=REMINDER_LEAD_MIN - REMINDER_HALF_WINDOW_MIN)
     upper = now + timedelta(minutes=REMINDER_LEAD_MIN + REMINDER_HALF_WINDOW_MIN)
-    targets = db.upcoming_unreminded(lower, upper)
-    if not targets:
-        return
-    for t in targets:
+
+    # Bot-created lịch (DB) — full reminder with Zoom link
+    for t in db.upcoming_unreminded(lower, upper):
         row: EventRow = t["row"]
         occ_iso: str = t["occurrence_iso"]
         text = _format_reminder(row, occ_iso)
@@ -73,6 +73,51 @@ async def _reminder_tick(app) -> None:
             log.info("Reminder sent: event=%s occ=%s", row.id, occ_iso)
         except TelegramError:
             log.exception("Reminder send failed (event=%s occ=%s)", row.id, occ_iso)
+
+    # External lịch (trên Calendar nhưng không do bot tạo) — reminder rút gọn
+    for occ in external_events.fetch_in_datetime_window(lower, upper):
+        if db.is_external_reminded(occ.calendar_event_id, occ.occurrence_iso):
+            continue
+        text = _format_external_reminder(occ)
+        try:
+            await app.bot.send_message(
+                chat_id=config.TELEGRAM_ALLOWED_CHAT_ID,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+            )
+            db.mark_external_reminded(occ.calendar_event_id, occ.occurrence_iso)
+            log.info(
+                "External reminder sent: cal=%s occ=%s",
+                occ.calendar_event_id, occ.occurrence_iso,
+            )
+        except TelegramError:
+            log.exception(
+                "External reminder failed (cal=%s occ=%s)",
+                occ.calendar_event_id, occ.occurrence_iso,
+            )
+
+
+def _format_external_reminder(occ: ExternalOccurrence) -> str:
+    d = occ.start_dt
+    end = d + timedelta(minutes=occ.duration_min)
+    time_str = f"{d.hour:02d}:{d.minute:02d}–{end.hour:02d}:{end.minute:02d}"
+    att_line = (
+        "\n".join(f"  • {e}" for e in occ.attendees)
+        if occ.attendees else "  (không)"
+    )
+    link_line = (
+        f"\n🗓 [Mở Calendar]({occ.html_link})" if occ.html_link else ""
+    )
+    return (
+        f"⏰ *Nhắc lịch ~30 phút nữa* — {time_str} 📅 _(từ Calendar)_\n\n"
+        f"🏷 *{occ.topic}*\n"
+        f"🎯 {occ.agenda or '(không có mô tả)'}\n"
+        f"⏱ {occ.duration_min} phút\n"
+        f"👥 Khách:\n{att_line}"
+        f"{link_line}\n\n"
+        f"_Lịch này không do bot tạo — sửa/xoá qua Google Calendar._"
+    )
 
 
 def _format_reminder(row: EventRow, occ_iso: str) -> str:
@@ -113,7 +158,8 @@ async def _digest_tick(app) -> None:
     if db.get_meta("last_digest_date") == today:
         return
     events = db.events_on_date(today)
-    text = _format_digest(today, events)
+    externals = external_events.fetch_on_date(now.date())
+    text = _format_digest(today, events, externals)
     try:
         await app.bot.send_message(
             chat_id=config.TELEGRAM_ALLOWED_CHAT_ID,
@@ -130,23 +176,53 @@ async def _digest_tick(app) -> None:
 _WEEKDAY_VI = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"]
 
 
-def _format_digest(day_iso: str, items: list[dict]) -> str:
+def _format_digest(
+    day_iso: str,
+    items: list[dict],
+    externals: list[ExternalOccurrence] | None = None,
+) -> str:
+    externals = externals or []
     y, m, d = day_iso.split("-")
     dt = datetime.fromisoformat(day_iso + "T00:00:00")
     header = f"☀️ *Lịch hôm nay* — {_WEEKDAY_VI[dt.weekday()]} {int(d)}/{int(m)}/{y}"
-    if not items:
+    total = len(items) + len(externals)
+    if total == 0:
         return header + "\n\n📭 Hôm nay không có lịch nào. Chúc chị một ngày làm việc hiệu quả ☕"
-    lines = [header, f"\n📋 *{len(items)} lịch* xếp theo giờ:\n"]
-    for i, it in enumerate(items, 1):
+
+    # Merge both sources into a single time-sorted list
+    merged: list[tuple[str, str]] = []  # (occ_iso, rendered_line)
+    for it in items:
         row: EventRow = it["row"]
-        occ_dt = datetime.fromisoformat(it["occurrence_iso"])
+        occ_iso = it["occurrence_iso"]
+        occ_dt = datetime.fromisoformat(occ_iso)
         end = occ_dt + timedelta(minutes=row.duration_min)
         time_str = f"{occ_dt.hour:02d}:{occ_dt.minute:02d}–{end.hour:02d}:{end.minute:02d}"
-        tag = "🔁" if row.recurring else "·"
-        att_count = len(row.attendees)
-        att_suffix = f" · 👥 {att_count}" if att_count else ""
-        lines.append(
-            f"{i}. {tag} *{time_str}* — {row.topic} (id={row.id}){att_suffix}"
-        )
-    lines.append("\n_Gõ /list để xem chi tiết từng lịch._")
+        tag = "🔁" if row.recurring else "🎯"
+        att_suffix = f" · 👥 {len(row.attendees)}" if row.attendees else ""
+        merged.append((
+            occ_iso,
+            f"{tag} *{time_str}* — {row.topic} (id={row.id}){att_suffix}",
+        ))
+    for occ in externals:
+        occ_dt = occ.start_dt
+        end = occ_dt + timedelta(minutes=occ.duration_min)
+        time_str = f"{occ_dt.hour:02d}:{occ_dt.minute:02d}–{end.hour:02d}:{end.minute:02d}"
+        att_suffix = f" · 👥 {len(occ.attendees)}" if occ.attendees else ""
+        merged.append((
+            occ.occurrence_iso,
+            f"📅 *{time_str}* — {occ.topic}{att_suffix}",
+        ))
+    merged.sort(key=lambda x: x[0])
+
+    lines = [header, f"\n📋 *{total} lịch* xếp theo giờ:\n"]
+    for i, (_, rendered) in enumerate(merged, 1):
+        lines.append(f"{i}. {rendered}")
+    legend = []
+    if items:
+        legend.append("🎯/🔁 lịch bot tạo")
+    if externals:
+        legend.append("📅 lịch Calendar (không do bot tạo)")
+    if legend:
+        lines.append("\n_" + " · ".join(legend) + "_")
+    lines.append("_Gõ /list để xem chi tiết lịch bot tạo._")
     return "\n".join(lines)

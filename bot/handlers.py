@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from bot import config, db, formatter
+from bot import config, db, external_events, formatter
 from bot.calendar_client import CalendarClient
 from bot.parser import (
     CloneOverrides,
@@ -226,10 +226,12 @@ async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await _reject(update)
         return
-    from bot import scheduler  # lazy import to avoid circular
-    today = datetime.now().date().isoformat()
+    from bot import external_events, scheduler  # lazy imports
+    now = datetime.now()
+    today = now.date().isoformat()
     items = db.events_on_date(today)
-    text = scheduler._format_digest(today, items)
+    externals = external_events.fetch_on_date(now.date())
+    text = scheduler._format_digest(today, items, externals)
     await update.message.reply_text(
         text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
     )
@@ -265,13 +267,31 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
                               query) -> None:
-    """Shared renderer for /list + pagination callbacks. Works with Message or CallbackQuery."""
-    total = db.count_events(
+    """Shared renderer for /list + pagination callbacks. Works with Message or CallbackQuery.
+
+    When a date range is specified, also folds in external Calendar events
+    (lịch chị Yến tự tạo trên Google Calendar, không do bot tạo). External
+    rows are display-only — numbered buttons remain on DB rows.
+    """
+    externals: list = []
+    if query.date_from and query.date_to:
+        try:
+            from datetime import date as _date
+            externals = external_events.fetch_in_date_range(
+                _date.fromisoformat(query.date_from),
+                _date.fromisoformat(query.date_to),
+            )
+        except Exception:
+            log.exception("External fetch failed for /list")
+            externals = []
+
+    db_total = db.count_events(
         topic_contains=query.topic,
         attendee_contains=query.attendee,
         date_from=query.date_from,
         date_to=query.date_to,
     )
+    total = db_total + len(externals)
     total_pages = max(1, (total + query.page_size - 1) // query.page_size)
     if query.page > total_pages:
         query.page = total_pages
@@ -289,6 +309,7 @@ async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
         page=query.page,
         page_size=query.page_size,
         query_desc=query.describe_vi(),
+        externals=externals if query.page == 1 else None,
     )
     markup = _paged_list_keyboard(rows, query, total_pages)
 

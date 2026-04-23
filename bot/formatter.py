@@ -166,6 +166,7 @@ def format_list(
     page: int = 1,
     page_size: int = 10,
     query_desc: str = "",
+    externals: list | None = None,
 ) -> str:
     """Render /list output.
 
@@ -181,7 +182,8 @@ def format_list(
             lines.append(f"{i}. {format_event_summary(r)}")
         return "\n".join(lines)
 
-    if not rows:
+    externals = externals or []
+    if not rows and not externals:
         base = "📭 Không có lịch nào khớp."
         if query_desc:
             base += f"\n🔍 {query_desc}"
@@ -197,9 +199,19 @@ def format_list(
     header += ":\n"
 
     lines = [header]
-    start_idx = (page - 1) * page_size
     for i, r in enumerate(rows, 1):
         lines.append(f"{i}. {format_event_summary(r)} · id=`{r.id}`")
+
+    if externals:
+        lines.append("")
+        lines.append(f"📅 *{len(externals)} lịch từ Calendar* _(không do bot tạo)_:")
+        for occ in externals:
+            d = occ.start_dt
+            date_str = f"{d.day}/{d.month} {d.hour:02d}:{d.minute:02d}"
+            topic = occ.topic if len(occ.topic) <= 36 else occ.topic[:34] + "…"
+            lines.append(f"  · {date_str} · {topic}")
+        lines.append("_Lịch Calendar không bấm số được — chỉnh qua Calendar UI._")
+
     return "\n".join(lines)
 
 

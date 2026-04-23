@@ -163,6 +163,19 @@ def _ensure_schema(c) -> None:
     c.execute(
         "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT)"
     )
+    # Dedup store for 30-min reminders on external (non-bot-created) Calendar
+    # events. Composite PK = (calendar_event_id, occurrence_iso) so recurring
+    # external series get one row per occurrence.
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_reminders_sent (
+            calendar_event_id TEXT NOT NULL,
+            occurrence_iso TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            PRIMARY KEY (calendar_event_id, occurrence_iso)
+        )
+        """
+    )
     c.commit()
     _SCHEMA_APPLIED = True
 
@@ -491,6 +504,25 @@ def set_meta(key: str, value: str) -> None:
             "INSERT INTO bot_meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
+        )
+
+
+def is_external_reminded(calendar_event_id: str, occurrence_iso: str) -> bool:
+    with _conn() as c:
+        r = c.execute(
+            "SELECT 1 FROM external_reminders_sent "
+            "WHERE calendar_event_id = ? AND occurrence_iso = ?",
+            (calendar_event_id, occurrence_iso),
+        ).fetchone()
+    return r is not None
+
+
+def mark_external_reminded(calendar_event_id: str, occurrence_iso: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO external_reminders_sent "
+            "(calendar_event_id, occurrence_iso, sent_at) VALUES (?, ?, ?)",
+            (calendar_event_id, occurrence_iso, _now_iso()),
         )
 
 

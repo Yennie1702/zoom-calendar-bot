@@ -169,6 +169,40 @@ class CalendarClient:
             .execute()
         )
 
+    def list_events_in_range(
+        self,
+        *,
+        time_min_iso: str,  # RFC3339, e.g. "2026-04-23T00:00:00+07:00"
+        time_max_iso: str,
+        calendar_id: str | None = None,
+        max_results: int = 250,
+    ) -> list[dict]:
+        """List events (expanded instances) in a time window.
+
+        Uses `singleEvents=True` so recurring series are expanded per occurrence
+        — the caller gets one dict per real meeting. Cancelled instances are
+        filtered out by the API when showDeleted=False (the default).
+        """
+        cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
+        items: list[dict] = []
+        page_token: str | None = None
+        while True:
+            req = self._service.events().list(
+                calendarId=cal,
+                timeMin=time_min_iso,
+                timeMax=time_max_iso,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=max_results,
+                pageToken=page_token,
+            )
+            resp = req.execute()
+            items.extend(resp.get("items", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return items
+
     def list_instances(
         self,
         event_id: str,
