@@ -114,9 +114,20 @@ def _escape(s: str) -> str:
 
 
 _HELP_TEXT = (
-    "📖 <b>JA Scheduler Bot — Hướng dẫn dùng</b>\n\n"
+    "📖 <b>JA Scheduler Bot — Hướng dẫn đầy đủ</b>\n"
+    "<i>Bot ghép Zoom + Google Calendar, chạy 24/7 trên Render.</i>\n\n"
 
-    "🆕 <b>TẠO LỊCH MỚI</b>\n"
+    # ─── 1. Quick-reference commands
+    "📌 <b>1. LỆNH NHANH</b>\n"
+    "• " + _code("/start") + ", " + _code("/help") + " — hướng dẫn\n"
+    "• " + _code("/list") + " — quản lý lịch (xem · sửa · xoá · tìm · lọc)\n"
+    "• " + _code("/today") + " — lịch hôm nay (digest on-demand)\n"
+    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả trên Calendar\n\n"
+
+    # ─── 2. Create
+    "🆕 <b>2. TẠO LỊCH</b>\n\n"
+
+    "<b>2A. Lịch công việc (Zoom + Calendar, mời khách)</b>\n"
     "<i>One-time:</i>\n"
     + _pre(
         'Tạo lịch "Tư vấn OKRs - Chị Lan":\n'
@@ -133,20 +144,22 @@ _HELP_TEXT = (
         "- Nội dung: Chương trình Mentor MBOs\n"
         "- Mời khách: a@x.vn, b@y.vn"
     ) + "\n"
-    "Bot parse → preview → bấm ✅ để tạo thật.\n\n"
+    "→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.\n\n"
 
-    "🔒 <b>LỊCH HY — CÁ NHÂN</b> (chỉ chị xem, Meet thay Zoom)\n"
-    "Keyword <code>HY</code> thay cho <code>Tạo lịch</code>. "
-    "Bot auto-gen Google Meet, set <i>visibility: private</i>, <b>KHÔNG tạo Zoom</b>, "
-    "không ghi tên John Academy trong mô tả.\n"
-    "<i>One-time:</i>\n"
+    "<b>2B. Lịch HY — cá nhân</b> 🔒 <i>(chỉ mình chị, Meet thay Zoom, private)</i>\n"
+    "Keyword " + _code("HY") + " thay " + _code("Tạo lịch") + ". Bot:\n"
+    "• Auto-sinh link <b>Google Meet</b>, KHÔNG tạo Zoom\n"
+    "• Set <b>visibility: private</b> → sếp/đồng nghiệp chỉ thấy busy-block, không xem được nội dung\n"
+    "• Không ghi tên John Academy trong mô tả\n"
+    "• Vẫn mời được khách tuỳ chọn, recurring hàng tuần OK\n"
+    "<i>One-time (chỉ mình chị):</i>\n"
     + _pre(
         'HY "Check-in sức khoẻ":\n'
         "- Thời gian: 25/4/2026 9:00\n"
         "- Thời lượng: 30 phút\n"
         "- Nội dung: Tự review tuần"
     ) + "\n"
-    "<i>Recurring (hàng tuần) + mời khách:</i>\n"
+    "<i>Recurring + mời khách riêng:</i>\n"
     + _pre(
         'HY "Mentor 1-1 Linh":\n'
         "- Thời gian: 10h sáng thứ 6 hàng tuần trong 8 tuần liên tiếp bắt đầu từ 1/5/2026\n"
@@ -154,10 +167,50 @@ _HELP_TEXT = (
         "- Nội dung: Coaching cá nhân\n"
         "- Khách: linh@abc.com"
     ) + "\n"
-    "Trong /list hiện dấu 🔒 cạnh tên lịch HY.\n\n"
+    "→ Trong /list hiện dấu 🔒 cạnh tên lịch HY.\n\n"
 
-    "⚡ <b>SỬA NHANH — LỊCH MỚI NHẤT</b>\n"
-    "Nhắn thẳng (không cần format):\n"
+    "<b>2C. Clone lịch cũ</b> (copy rồi chỉnh, nhanh hơn gõ lại)\n"
+    + _pre(
+        "tạo lịch giống #5\n"
+        "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
+        'tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách a@x.vn\n'
+        'tạo lịch giống #3 nhưng tên "OKRs v2", thêm khách b@y.vn'
+    ) + "\n\n"
+
+    # ─── 3. /list
+    "📋 <b>3. QUẢN LÝ LỊCH — /list</b>\n\n"
+
+    "<b>3A. Mặc định</b> — " + _code("/list") + " hiện 10 lịch gần nhất:\n"
+    "• Mỗi lịch 1 nút số (1-10) → bấm → detail\n"
+    "• Detail có nút <b>✏️ Sửa</b> / <b>🗑 Xoá</b>\n"
+    "• Menu ✏️: 6 field — giờ/ngày · thời lượng · thêm khách · bỏ khách · tên · nội dung\n"
+    "• 🔒 cạnh tên = lịch HY cá nhân\n\n"
+
+    "<b>3B. Tìm &amp; lọc &amp; phân trang</b>\n"
+    + _pre(
+        "/list 2                   ← trang 2 (10 lịch/trang)\n"
+        "/list OKRs                ← lọc từ khoá trong tên/nội dung\n"
+        "/list khách lan@abc.com   ← lọc theo email khách\n"
+        "/list tuần này\n"
+        "/list tuần sau | tuần trước\n"
+        "/list hôm nay | mai | hôm qua\n"
+        "/list tháng này | tháng 5 | tháng 5/2026\n"
+        "/list 27/4                ← ngày cụ thể\n"
+        "/list 27/4-4/5            ← khoảng ngày\n"
+        "/list OKRs 2              ← từ khoá + trang"
+    ) + "\n"
+
+    "<b>3C. Lịch Calendar không do bot tạo</b> 📅\n"
+    "Khi /list có lọc theo ngày, bot thêm section \"📅 N lịch từ Calendar\" "
+    "với nút <code>E1</code>/<code>E2</code>…\n"
+    "• Bấm <code>E#</code> → detail + ✏️ Sửa / 🗑 Xoá luôn qua bot (không cần mở Calendar)\n"
+    "• Menu ✏️ 6 field giống lịch bot tạo\n"
+    "• Notify-email toggle hoạt động bình thường\n\n"
+
+    # ─── 4. Quick edit
+    "⚡ <b>4. SỬA NHANH TỪ CHAT</b> (không cần /list)\n\n"
+
+    "<b>4A. Sửa lịch mới nhất</b> — nhắn thẳng:\n"
     + _pre(
         "sửa giờ 15h30\n"
         "sửa giờ 15h30 25/4/2026\n"
@@ -168,83 +221,68 @@ _HELP_TEXT = (
         "bỏ khách a@x.vn\n"
         "xoá lịch"
     ) + "\n"
-    "Target lịch khác: thêm " + _code("#id") + " (lấy từ /list), VD: "
-    + _code("sửa giờ 15h #5") + "\n\n"
 
-    "🔍 <b>SỬA/XOÁ LỊCH CŨ BẰNG TÊN</b> (không cần nhớ id)\n"
+    "<b>4B. Sửa lịch khác — bằng #id</b> (lấy id từ /list):\n"
+    + _pre(
+        "sửa giờ 15h #5\n"
+        "thêm khách a@x.vn #5\n"
+        "xoá lịch #5"
+    ) + "\n"
+
+    "<b>4C. Sửa lịch cũ bằng TÊN</b> (không cần nhớ id):\n"
     + _pre(
         'sửa giờ 15h30 "Tư vấn OKRs" ngày 25/4\n'
         'xoá lịch "Tư vấn OKRs" ngày 25/4\n'
         "xoá lịch khách lan@abc.com\n"
         'sửa thời lượng 45 phút "Mentor MBOs"'
     ) + "\n"
-    "Nhiều lịch khớp → bot hiện list để chị bấm số chọn.\n\n"
+    "→ Nhiều lịch khớp → bot hiện list để chị bấm số chọn.\n\n"
 
-    "📑 <b>CLONE LỊCH CŨ</b> (copy nhanh rồi chỉnh)\n"
-    + _pre(
-        "tạo lịch giống #5\n"
-        "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
-        'tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách a@x.vn\n'
-        'tạo lịch giống #3 nhưng tên "OKRs v2", thêm khách b@y.vn'
-    ) + "\n\n"
+    # ─── 5. Lịch lặp / 1 buổi riêng
+    "🔁 <b>5. LỊCH LẶP — SỬA/XOÁ 1 BUỔI RIÊNG</b>\n"
+    "• <b>Sửa 1 buổi:</b> /list → lịch lặp → ✏️ → \"📝 Sửa 1 buổi riêng\" → chọn buổi → Giờ / Thời lượng\n"
+    "• <b>Xoá 1 buổi:</b> /list → lịch lặp → 🗑 → \"⦿ Chỉ 1 buổi\" → chọn buổi\n"
+    "• <b>Xoá cả series:</b> /list → lịch lặp → 🗑 → \"🗑 Toàn bộ series\"\n\n"
 
-    "⚠️ <b>CẢNH BÁO TRÙNG LỊCH</b>\n"
-    "Khi tạo / clone / đổi giờ, nếu overlap với lịch khác, bot cảnh báo ngay trong preview. "
-    "Chị vẫn confirm được nếu cố ý trùng.\n\n"
+    # ─── 6. Email notify toggle
+    "📧 <b>6. GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>\n"
+    "Mỗi lần confirm sửa / xoá, bot hiện 2 nút:\n"
+    "• <b>✅ … + gửi mail</b> — Google Calendar gửi email update/huỷ cho khách\n"
+    "• <b>✅ … (không mail)</b> — update/huỷ âm thầm, khách không nhận email\n"
+    "Áp dụng cho: sửa/xoá toàn bộ lịch · sửa/xoá 1 buổi riêng · xoá series · sửa lịch Calendar "
+    "không do bot tạo.\n\n"
 
-    "📧 <b>GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>\n"
-    "Mỗi lần confirm sửa / xoá, bot hiện 2 lựa chọn:\n"
-    "• <b>✅ Sửa + gửi mail</b> / <b>✅ Xoá + gửi mail</b> — Google Calendar gửi email update/huỷ cho tất cả khách.\n"
-    "• <b>✅ Sửa (không mail)</b> / <b>✅ Xoá (không mail)</b> — update/huỷ âm thầm, khách không nhận email.\n"
-    "Áp dụng cho cả sửa/xoá toàn bộ lịch, 1 buổi riêng của lịch lặp, và xoá toàn bộ series.\n\n"
+    # ─── 7. Auto reminder + digest + conflict
+    "⏰ <b>7. NHẮC LỊCH &amp; DIGEST TỰ ĐỘNG</b>\n"
+    "• <b>~30 phút trước mỗi buổi</b> bot gửi nhắc vào chat này (cả lịch bot tạo + lịch Calendar).\n"
+    "• Lịch HY: reminder hiện 🔗 Google Meet thay vì Zoom.\n"
+    "• <b>07:00 sáng</b>: digest toàn bộ lịch trong ngày (sort theo giờ, icon 🎯/🔁/📅/🔒).\n"
+    "• " + _code("/today") + " — xem digest hôm nay bất kỳ lúc nào.\n\n"
 
-    "⏰ <b>NHẮC LỊCH &amp; DIGEST TỰ ĐỘNG</b>\n"
-    "• Nhắc ~30 phút trước mỗi lịch (cả buổi lặp) — gửi vào chat này.\n"
-    "• 07:00 sáng: digest tất cả lịch trong ngày.\n"
-    "• /today — xem agenda hôm nay bất kỳ lúc nào.\n"
-    "• Digest + /list + nhắc giờ thấy <b>cả lịch Calendar không do bot tạo</b> (hiển thị 📅).\n"
-    "• Trong /list: bấm nút <code>E1</code>/<code>E2</code>… để xem/sửa/xoá luôn qua bot.\n\n"
+    "⚠️ <b>8. CẢNH BÁO TRÙNG LỊCH</b>\n"
+    "Khi tạo / clone / đổi giờ, nếu overlap với lịch khác (kể cả lịch lặp), "
+    "bot cảnh báo ngay trong preview. Chị vẫn confirm được nếu cố ý trùng.\n\n"
 
-    "📋 <b>QUẢN LÝ ĐẦY ĐỦ — /list</b>\n"
-    "• Hiện 10 lịch gần nhất, mỗi lịch 1 nút số\n"
-    "• Bấm số → chi tiết + nút ✏️ Sửa / 🗑 Xoá\n"
-    "• ✏️ → menu 6 field: giờ/ngày · thời lượng · thêm/bỏ khách · tên · nội dung\n"
-    "• 🗑 → confirm → huỷ Zoom + Calendar (khách nhận email huỷ)\n\n"
-
-    "🔎 <b>Tìm &amp; lật trang trong /list:</b>\n"
-    + _pre(
-        "/list 2                  ← trang 2 (10 lịch/trang)\n"
-        "/list OKRs               ← lọc theo từ khoá tên/nội dung\n"
-        "/list khách lan@abc.com  ← lọc theo email khách\n"
-        "/list tuần này\n"
-        "/list tuần sau | tuần trước\n"
-        "/list hôm nay | mai | hôm qua\n"
-        "/list tháng này | tháng 5 | tháng 5/2026\n"
-        "/list 27/4               ← ngày cụ thể\n"
-        "/list 27/4-4/5           ← khoảng ngày\n"
-        "/list OKRs 2             ← từ khoá + trang"
-    ) + "\n\n"
-
-    "🔁 <b>LỊCH LẶP — XOÁ / SỬA 1 BUỔI RIÊNG</b>\n"
-    "• Xoá 1 buổi: /list → lịch lặp → 🗑 → \"⦿ Chỉ 1 buổi\" → chọn buổi\n"
-    "• Sửa 1 buổi: /list → lịch lặp → ✏️ → \"📝 Sửa 1 buổi riêng\" → chọn buổi → Giờ/Thời lượng\n\n"
-
-    "📅 <b>KÉO THẢ THỦ CÔNG TRÊN GOOGLE CALENDAR</b>\n"
-    "Chị cứ kéo thoải mái trên Calendar UI. Sau đó đồng bộ:\n"
+    # ─── 9. Sync with Calendar drag-drop
+    "🔄 <b>9. ĐỒNG BỘ SAU KHI KÉO THẢ TRÊN GOOGLE CALENDAR</b>\n"
+    "Chị kéo thoải mái trên Calendar UI. Sau đó báo bot đồng bộ:\n"
     "• " + _code("/sync") + " → đồng bộ lịch mới nhất\n"
     "• " + _code("/sync 5") + " → đồng bộ lịch id=5\n"
-    "• Hoặc /list → bấm lịch: nếu có drift sẽ có banner ⚠️ + nút 🔄 Sync\n"
-    "Bot coi Calendar là nguồn đúng, update Zoom + DB theo.\n\n"
+    "• Hoặc /list → bấm vào lịch: nếu có drift sẽ có banner ⚠️ + nút <b>🔄 Sync</b>\n"
+    "→ Bot coi Calendar là <b>nguồn đúng</b>, update Zoom + DB theo.\n"
+    "<i>Lịch HY (Meet) chỉ sync với Calendar, không đụng Zoom.</i>\n\n"
 
-    "📌 <b>LỆNH TỔNG HỢP</b>\n"
-    "• /start, /help — hướng dẫn\n"
-    "• /list — quản lý 10 lịch gần nhất\n"
-    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả\n"
-    "• /today — digest lịch hôm nay\n\n"
+    # ─── Icons legend + notes
+    "🎨 <b>10. ICON TRONG /list &amp; DIGEST</b>\n"
+    "• 🎯 lịch bot tạo · 🔁 lịch bot tạo + recurring\n"
+    "• 🔒 lịch HY cá nhân (Meet, private)\n"
+    "• 📅 lịch từ Calendar (không do bot tạo)\n\n"
 
-    "⚠️ <b>Lưu ý</b>\n"
-    "• Chỉ chị Hải Yến nhắn được (chat_id filter).\n"
-    "• Lịch lặp: /sync chỉ đồng bộ cấp series. Kéo 1 instance riêng trên Calendar → dùng luồng \"Sửa 1 buổi riêng\" qua /list."
+    "⚠️ <b>LƯU Ý</b>\n"
+    "• Chỉ chị Hải Yến (chat_id whitelist) nhắn được.\n"
+    "• Bot luôn preview trước khi ghi thật. Gõ " + _code("huỷ") + " để bỏ mọi trạng thái chờ.\n"
+    "• /sync chỉ đồng bộ cấp series — kéo 1 instance riêng trên Calendar → dùng luồng "
+    "\"Sửa 1 buổi riêng\" qua /list."
 )
 
 
