@@ -113,8 +113,8 @@ def _escape(s: str) -> str:
     )
 
 
-_HELP_TEXT = (
-    "📖 <b>JA Scheduler Bot — Hướng dẫn đầy đủ</b>\n"
+_HELP_TEXT_PART1 = (
+    "📖 <b>JA Scheduler Bot — Hướng dẫn (1/2)</b>\n"
     "<i>Bot ghép Zoom + Google Calendar, chạy 24/7 trên Render.</i>\n\n"
 
     # ─── 1. Quick-reference commands
@@ -207,6 +207,13 @@ _HELP_TEXT = (
     "• Menu ✏️ 6 field giống lịch bot tạo\n"
     "• Notify-email toggle hoạt động bình thường\n\n"
 
+    "<i>⬇️ Xem tiếp Part 2/2: Sửa nhanh · Lịch lặp · Email · Nhắc · Sync · Icons.</i>"
+)
+
+
+_HELP_TEXT_PART2 = (
+    "📖 <b>JA Scheduler Bot — Hướng dẫn (2/2)</b>\n\n"
+
     # ─── 4. Quick edit
     "⚡ <b>4. SỬA NHANH TỪ CHAT</b> (không cần /list)\n\n"
 
@@ -286,22 +293,28 @@ _HELP_TEXT = (
 )
 
 
+async def _send_help(update: Update) -> None:
+    """Help > 4096 chars nên chia 2 tin (Telegram sendMessage giới hạn 4096)."""
+    await update.message.reply_text(
+        _HELP_TEXT_PART1, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    )
+    await update.message.reply_text(
+        _HELP_TEXT_PART2, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    )
+
+
 async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await _reject(update)
         return
-    await update.message.reply_text(
-        _HELP_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-    )
+    await _send_help(update)
 
 
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
         await _reject(update)
         return
-    await update.message.reply_text(
-        _HELP_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-    )
+    await _send_help(update)
 
 
 async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
