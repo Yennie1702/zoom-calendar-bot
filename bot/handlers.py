@@ -323,7 +323,7 @@ async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _reject(update)
         return
     from bot import external_events, scheduler  # lazy imports
-    now = datetime.now()
+    now = scheduler._now_vn()
     today = now.date().isoformat()
     items = db.events_on_date(today)
     externals = external_events.fetch_on_date(now.date())

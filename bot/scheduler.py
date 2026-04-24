@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from telegram import BotCommand
 from telegram.constants import ParseMode
@@ -31,6 +32,17 @@ REMINDER_LEAD_MIN = 30
 REMINDER_HALF_WINDOW_MIN = 2
 DIGEST_HOUR = 7
 TICK_SEC = 60
+
+# DB stores naive Asia/Ho_Chi_Minh timestamps. Render containers run in UTC,
+# so `datetime.now()` would be 7h behind DB values → reminders never hit the
+# 28-32min window and digest fires at 07:00 UTC (= 14:00 VN) instead of 07:00 VN.
+# Always convert to VN local time via ZoneInfo.
+_VN_TZ = ZoneInfo(config.TIMEZONE)
+
+
+def _now_vn() -> datetime:
+    """Naive datetime in Asia/Ho_Chi_Minh (matches DB storage format)."""
+    return datetime.now(_VN_TZ).replace(tzinfo=None)
 
 
 _BOT_COMMANDS = [
@@ -68,7 +80,7 @@ async def reminder_loop(app) -> None:
 
 
 async def _reminder_tick(app) -> None:
-    now = datetime.now()
+    now = _now_vn()
     lower = now + timedelta(minutes=REMINDER_LEAD_MIN - REMINDER_HALF_WINDOW_MIN)
     upper = now + timedelta(minutes=REMINDER_LEAD_MIN + REMINDER_HALF_WINDOW_MIN)
 
@@ -180,7 +192,7 @@ async def daily_digest_loop(app) -> None:
 
 
 async def _digest_tick(app) -> None:
-    now = datetime.now()
+    now = _now_vn()
     if now.hour != DIGEST_HOUR:
         return
     today = now.date().isoformat()
