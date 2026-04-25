@@ -30,7 +30,11 @@ log = logging.getLogger(__name__)
 # 30 min lead with ±2 min window → ticks every 60s, never skips, never doubles
 REMINDER_LEAD_MIN = 30
 REMINDER_HALF_WINDOW_MIN = 2
-DIGEST_HOUR = 7
+# Digest fires 1 lần/ngày trong cửa sổ [DIGEST_HOUR_START, DIGEST_HOUR_END_EXCL).
+# Cửa sổ rộng để chống Render free-tier sleep — nếu service ngủ qua 7h sáng và
+# wake lúc 9h, digest vẫn fire trong ngày (dedupe qua `bot_meta.last_digest_date`).
+DIGEST_HOUR_START = 7
+DIGEST_HOUR_END_EXCL = 19  # tức cap đến 18:59
 TICK_SEC = 60
 
 # DB stores naive Asia/Ho_Chi_Minh timestamps. Render containers run in UTC,
@@ -193,7 +197,9 @@ async def daily_digest_loop(app) -> None:
 
 async def _digest_tick(app) -> None:
     now = _now_vn()
-    if now.hour != DIGEST_HOUR:
+    # Window 7h-18h (Render free-tier có thể sleep qua 7h sáng → cần buffer
+    # rộng để khi service wake bất cứ lúc nào trong window vẫn fire 1 lần).
+    if not (DIGEST_HOUR_START <= now.hour < DIGEST_HOUR_END_EXCL):
         return
     today = now.date().isoformat()
     if db.get_meta("last_digest_date") == today:
