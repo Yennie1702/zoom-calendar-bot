@@ -1,0 +1,167 @@
+{
+  "name": "JA Scheduler Bot",
+  "slug": "ja-scheduler-bot",
+  "version": "1.0.0",
+  "status": "production",
+  "deployed_at": "2026-04-22",
+  "owner": "chị Hải Yến (nguyenthihaiyen@john.vn)",
+  "languages": ["Vietnamese (UI)", "Python 3.14 (code)"],
+
+  "summary": {
+    "vi": "Telegram bot tự động hoá workflow đặt lịch tư vấn: từ 1 brief text → tạo Zoom meeting + Google Calendar invite gửi email cho khách, đồng thời ghi vào database để quản lý (sửa / xoá / sync).",
+    "en": "Telegram bot that automates a sales consultation booking flow: parse a structured brief → create Zoom meeting → create Google Calendar event with invitees → persist to DB for later edit/delete/sync."
+  },
+
+  "problem_solved": {
+    "before": "Quy trình thủ công 4 bước mỗi lần đặt lịch: (1) tạo Zoom meeting, (2) copy passcode + URL, (3) soạn Calendar invite, (4) add khách + gửi. ~3-5 phút mỗi lịch, dễ sai giờ/email.",
+    "after": "Gõ 1 brief theo format → bot tạo Zoom + Calendar + gửi invite trong <5s. Quản lý qua /list, sửa/xoá/sync drag-drop trên Google Calendar."
+  },
+
+  "stack": {
+    "runtime": "Python 3.14",
+    "bot_framework": "python-telegram-bot (webhook mode)",
+    "hosting": "Render Free tier (auto-deploy từ GitHub main branch)",
+    "database": "Turso libSQL (SQLite-compatible, serverless)",
+    "integrations": [
+      {
+        "name": "Zoom",
+        "auth": "Server-to-Server OAuth",
+        "scopes": [
+          "meeting:write:admin",
+          "meeting:read:admin",
+          "user:read:admin",
+          "meeting:delete:meeting:admin"
+        ]
+      },
+      {
+        "name": "Google Calendar",
+        "api": "Calendar API v3",
+        "auth": "OAuth user flow (refresh token, published app)",
+        "scope": "https://www.googleapis.com/auth/calendar.events"
+      },
+      {
+        "name": "Telegram",
+        "mode": "webhook",
+        "path": "/telegram"
+      }
+    ],
+    "budget_usd_per_month": 0
+  },
+
+  "architecture": {
+    "flow": [
+      "User (Telegram) → POST webhook → Render service",
+      "Bot parses brief via regex → extracts tên, email, time, duration, nội dung",
+      "Bot calls Zoom API → create meeting (topic, start, duration, passcode)",
+      "Bot calls Google Calendar API → insert event with Zoom link in description + attendees[] → sendUpdates=all triggers invite email",
+      "Bot writes row to Turso DB (event_id, html_link, calendar_id, zoom_id, created_at)",
+      "Bot replies Telegram message with Zoom link + Calendar link + inline keyboard (Sửa / Xoá)"
+    ],
+    "key_design_decisions": [
+      "OAuth user flow (not service account) để Calendar invite gửi 'from' email công việc chứ không phải bot email.",
+      "Refresh token strategy: published OAuth app (production) → không expire sau 7 ngày như testing mode.",
+      "Multi-secret rotation support cho Google (zero-downtime), awareness Zoom/Telegram/Turso là single-secret (có downtime).",
+      "Notify toggle (send email hay không) inline keyboard khi edit/delete — chị Yến có lúc muốn sửa private không làm phiền khách.",
+      "Recurring events qua RRULE param, mỗi instance có thể sửa/huỷ độc lập."
+    ]
+  },
+
+  "env_vars": {
+    "required": [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_ALLOWED_CHAT_ID",
+      "ZOOM_ACCOUNT_ID",
+      "ZOOM_CLIENT_ID",
+      "ZOOM_CLIENT_SECRET",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "GOOGLE_REFRESH_TOKEN",
+      "GOOGLE_CALENDAR_ACCOUNT",
+      "TURSO_DATABASE_URL",
+      "TURSO_AUTH_TOKEN",
+      "CONTACT_PHONE",
+      "CONTACT_NAME",
+      "CONTACT_TITLE",
+      "TEST_EMAIL"
+    ],
+    "notes": "Secrets lưu trong Render Environment tab + .env local (gitignored, chmod 600). Không bao giờ commit. File .env.example có placeholder."
+  },
+
+  "commands": {
+    "telegram": [
+      {"cmd": "/start", "desc": "Welcome + help"},
+      {"cmd": "/help", "desc": "Xem format tạo lịch + ví dụ"},
+      {"cmd": "/list", "desc": "10 lịch gần nhất, bấm số để vào chi tiết"},
+      {"cmd": "/sync [id]", "desc": "So sánh Google Calendar vs DB, update nếu drag-drop trên Calendar UI"}
+    ],
+    "brief_format_example": "Tạo lịch \"Tư vấn OKRs - Chị Lan\":\n- Thời gian: 22/4/2026 14:00\n- Thời lượng: 30 phút\n- Nội dung: Tư vấn gói Coaching OKRs\n- Khách: lan@abc.com",
+    "quick_edit_examples": [
+      "sửa giờ 15h30",
+      "sửa giờ 15h30 25/4/2026 #5",
+      "sửa thời lượng 45 phút",
+      "sửa tên Tư vấn OKRs v2",
+      "thêm khách a@x.vn, b@y.vn",
+      "bỏ khách a@x.vn",
+      "xoá lịch"
+    ],
+    "recurring_example": "- Thời gian: 8h30 sáng thứ 4 hàng tuần trong 12 tuần liên tiếp bắt đầu từ 20/5/2026"
+  },
+
+  "deployment": {
+    "platform": "Render",
+    "service_type": "Web Service (free tier)",
+    "build_cmd": "pip install -r requirements.txt",
+    "start_cmd": "python -m bot.main",
+    "auto_deploy": "on git push to main",
+    "health_check": "GET / → 404 expected (webhook-only, no root route)",
+    "webhook_registered_via": "Telegram setWebhook API, URL = https://<service>.onrender.com/telegram"
+  },
+
+  "security": {
+    "secret_management": [
+      ".env gitignored (verified via .gitignore)",
+      ".env.example tracked với placeholders only",
+      "chmod 600 .env",
+      "No secrets in git log (verified)",
+      "Logs (logs/*.log) gitignored + don't log secrets",
+      "Temp files (/tmp/refresh_token_run.log) deleted sau OAuth flow"
+    ],
+    "access_control": {
+      "telegram": "TELEGRAM_ALLOWED_CHAT_ID whitelist — chỉ chị Yến gửi được, reject kèm log nếu chat_id khác",
+      "oauth_scope": "Calendar events only (không full calendar management)",
+      "zoom_scope": "Meeting CRUD admin scope"
+    },
+    "rotation_done_2026-04-22": {
+      "google": "Client Secret rotated + old deleted; Refresh token regenerated after OAuth published",
+      "zoom": "Client Secret regenerated",
+      "telegram": "Bot token revoked + new via @BotFather",
+      "turso": "All tokens invalidated + new created"
+    }
+  },
+
+  "gotchas": [
+    "Zoom S2S OAuth scope 'meeting:delete:meeting:admin' bắt buộc nếu bot cần xoá/huỷ lịch. Nếu thiếu, bot tạo được nhưng xoá fail silent.",
+    "Google OAuth 'Desktop app' type khi chưa verify sẽ hiện warning 'Chưa xác minh' — click 'Nâng cao' → link ẩn để bypass. Published app không cần verify cho use case personal/small team.",
+    "Refresh token không expire KHI OAuth app ở 'In production'; testing mode chỉ kéo dài 7 ngày.",
+    "Turso dashboard không có per-token revoke UI — chỉ có nuclear 'Invalidate All Tokens'. Plan rotation accordingly.",
+    "Render env var update tự trigger redeploy (~90s). Không cần manual deploy.",
+    "Telegram chat_id (user) KHÁC bot_id. TELEGRAM_ALLOWED_CHAT_ID phải là user id (dùng /getMe hoặc get_chat_id.py lấy), không phải bot id từ BotFather.",
+    "Google Calendar API 'conferenceData=None' khi insert để suppress auto Google Meet link (vì invite dùng Zoom)."
+  ],
+
+  "extensibility_ideas": [
+    "LLM parsing layer để nhận brief tự do thay vì format cứng (hiện tại regex parse).",
+    "Multi-user support (hiện chỉ 1 allowed chat_id).",
+    "Zalo / WhatsApp adapter (reuse bot logic, đổi adapter incoming).",
+    "Analytics: số lịch tạo / cancelled / no-show theo tuần."
+  ],
+
+  "reference_files": {
+    "entry_point": "bot/main.py",
+    "telegram_handlers": "bot/handlers.py",
+    "zoom_client": "bot/zoom_client.py",
+    "calendar_client": "bot/calendar_client.py",
+    "database": "bot/db.py",
+    "oauth_bootstrap_script": "get_refresh_token.py"
+  }
+}
