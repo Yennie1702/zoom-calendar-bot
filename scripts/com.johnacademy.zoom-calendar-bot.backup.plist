@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+launchd config — backup JA Scheduler DB + memory files daily 23:00 local.
+
+Install:
+  cp scripts/com.johnacademy.zoom-calendar-bot.backup.plist ~/Library/LaunchAgents/
+  launchctl load   ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
+
+Status:
+  launchctl list | grep zoom-calendar-bot
+
+Trigger ngay (test):
+  launchctl start com.johnacademy.zoom-calendar-bot.backup
+
+Uninstall:
+  launchctl unload ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
+  rm              ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
+
+Logs: /Volumes/Space/Claude/zoom-calendar-bot/logs/backup.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.johnacademy.zoom-calendar-bot.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Volumes/Space/Claude/zoom-calendar-bot/scripts/backup_all.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Volumes/Space/Claude/zoom-calendar-bot</string>
+
+    <!-- Daily at 23:00 local time. Nếu máy đang sleep, launchd sẽ catch up
+         khi máy wake (RunAtLoad=false không cần). -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>23</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- launchd ghi stdout/stderr ra file dưới (backup_all.sh đã append vào
+         logs/backup.log nên 2 file dưới chỉ có lỗi harness-level). -->
+    <key>StandardOutPath</key>
+    <string>/Volumes/Space/Claude/zoom-calendar-bot/logs/backup.launchd.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/Space/Claude/zoom-calendar-bot/logs/backup.launchd.stderr.log</string>
+
+    <!-- Tránh double-trigger nếu máy boot đúng 23h -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
