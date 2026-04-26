@@ -8,11 +8,14 @@ What it does:
     2. You log in — IMPORTANT: use the Google account that OWNS the Calendar
        where you want invites to come from (nguyenthihaiyen@john.vn), NOT the
        personal account that owns the GCP project.
-    3. Approve the scope "See, edit, share, and permanently delete all your
-       calendars" (calendar.events).
+    3. Approve 2 scopes:
+       - calendar.events — manage Google Calendar invites (existing)
+       - drive.file — upload/list ONLY files this bot creates on Drive
+                      (used by scripts/backup_to_drive.py daily 23h)
     4. Script prints the refresh_token — copy it into .env as GOOGLE_REFRESH_TOKEN.
 
-Run once. The refresh token does not expire unless revoked.
+Run once after adding the new Drive scope. Refresh token does not expire
+unless revoked.
 """
 from __future__ import annotations
 
@@ -30,7 +33,12 @@ CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 EXPECTED_ACCOUNT = os.environ.get("GOOGLE_CALENDAR_ACCOUNT", "").strip()
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    # drive.file = chỉ touch file mà bot tự tạo (KHÔNG đọc Drive khác của chị).
+    # Cho phép create, list, update, delete trên các file/folder bot upload.
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 def main() -> int:

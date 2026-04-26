@@ -1,27 +1,65 @@
 # Backup workflow — JA Scheduler Bot
 
 Backup tự động daily 23:00 local (Asia/Ho_Chi_Minh) qua macOS launchd.
-Tất cả file lưu trong `data/` (đã gitignored, không leak email khách).
+Lưu **2 lớp**: local `data/` (gitignored) + Google Drive folder `JA-Scheduler-Backups/`.
 
 ## Cái gì được backup
 
 | Loại | Nguồn | Đích | Tần suất | Giữ |
 |---|---|---|---|---|
-| 🔴 **DB** | Turso libSQL (events, bot_meta, external_reminders_sent) | `data/backups/db_<TS>.sql.gz` | Daily 23h | 90 ngày |
-| 🟡 **Memory files** | `~/.claude/projects/-Volumes-Space-Claude-JOHNSPACE/memory/*.md` | `data/memory_backups/<TS>/*.md` | Daily 23h | 90 ngày |
+| 🔴 **DB** | Turso libSQL (events, bot_meta, external_reminders_sent) | `data/backups/db_<TS>.sql.gz` | Daily 23h | 90 ngày local |
+| 🟡 **Memory files** | `~/.claude/projects/-Volumes-Space-Claude-JOHNSPACE/memory/*.md` | `data/memory_backups/<TS>/*.md` | Daily 23h | 90 ngày local |
+| ☁️ **Drive mirror** | `data/` + `bot/` archives | Drive `JA-Scheduler-Backups/<TS>__data.tar.gz` + `<TS>__bot.tar.gz` | Daily 23h | 90 ngày |
 
 ## Files
 
 - `scripts/backup_db.py` — dump 3 bảng Turso → SQL plain text → gzip
 - `scripts/backup_memory.sh` — copy markdown memory files vào snapshot folder theo timestamp
-- `scripts/backup_all.sh` — wrapper gọi cả 2, chạy không -e (1 phần fail không skip phần còn lại)
+- `scripts/backup_to_drive.py` — tar `data/` + `bot/` → upload Drive folder
+- `bot/drive_client.py` — Drive API helper (reuse Google OAuth refresh token)
+- `scripts/backup_all.sh` — wrapper gọi cả 3, chạy không -e (1 phần fail không skip phần còn lại)
 - `scripts/com.johnacademy.zoom-calendar-bot.backup.plist` — launchd config
 
-## Setup lần đầu (đã làm — chỉ tham khảo)
+## Setup lần đầu
+
+### 1. Local backup (đã làm)
 
 ```bash
 cp scripts/com.johnacademy.zoom-calendar-bot.backup.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
+```
+
+### 2. Drive backup — re-OAuth để add scope `drive.file` (LÀM 1 LẦN)
+
+Refresh token hiện tại chỉ có scope `calendar.events`. Phải chạy lại
+`get_refresh_token.py` để add `drive.file`:
+
+```bash
+cd /Volumes/Space/Claude/zoom-calendar-bot
+venv/bin/python get_refresh_token.py
+```
+
+Browser sẽ mở → đăng nhập **đúng account `nguyenthihaiyen@john.vn`** →
+approve 2 scopes:
+- "See, edit, share, and permanently delete all your calendars" (đã có)
+- "See, edit, create, and delete only the specific Google Drive files you use with this app" (mới)
+
+Script in ra `GOOGLE_REFRESH_TOKEN=ya29...` — copy vào `.env`:
+
+```bash
+# Edit .env, replace dòng cũ
+GOOGLE_REFRESH_TOKEN=<token mới in ra>
+```
+
+**Quan trọng**: token này cũng cần update trên Render dashboard
+(Settings → Environment → `GOOGLE_REFRESH_TOKEN`) để bot prod cũng dùng được.
+Nhưng KHÔNG bắt buộc cho backup script — backup chỉ chạy local.
+
+Verify:
+
+```bash
+venv/bin/python scripts/backup_to_drive.py
+# Expect: "Drive backup done — 2/2 archive(s) uploaded"
 ```
 
 ## Operate
@@ -90,17 +128,35 @@ cp -p "$LATEST"*.md ~/.claude/projects/-Volumes-Space-Claude-JOHNSPACE/memory/
 1. **Máy tắt qua 23h → skip ngày đó.** launchd `StartCalendarInterval` trên macOS:
    khi máy sleep đúng 23h, launchd catch-up khi máy wake (trong giờ chị làm) — vẫn chạy
    nhưng có thể là 8-9h sáng hôm sau. OK vì daily cadence không cần precise.
-2. **Chưa encrypt.** DB dump chứa email khách. Hiện tại đặt trong `data/` (gitignored,
-   trên ổ Space của chị). Nếu chị muốn upload lên Google Drive sau này, cần `age` encrypt
-   trước (chưa setup, sẽ làm khi chị yêu cầu).
-3. **Chỉ backup local.** Nếu ổ Space hỏng = mất hết. Để triple-redundancy, sau này:
-   - Sync `data/backups/` qua Google Drive Desktop → cloud copy
-   - Hoặc thêm step push vào GitHub private repo (qua Actions ngược)
-4. **Log file dòng đôi.** `backup.log` hiện hiển thị mỗi dòng 2 lần do Python FileHandler +
-   shell `tee` cùng append. Không ảnh hưởng correctness, có thể fix sau nếu khó đọc.
+2. **Drive scope an toàn.** `drive.file` chỉ cho bot thấy/sửa file mà NÓ tự tạo
+   (folder `JA-Scheduler-Backups/`), không đọc được file khác trong Drive của chị.
+3. **Chưa encrypt.** DB dump chứa email khách. Drive ở account chị nên Google account
+   được trust, nhưng nếu account bị compromise → leak. Có thể thêm `age` encrypt sau.
+4. **Drive là private**: file upload mặc định chỉ chị đọc được (không ai khác).
+5. **Log file dòng đôi.** `backup.log` hiện hiển thị mỗi dòng 2 lần do Python FileHandler +
+   shell `tee` cùng append. Không ảnh hưởng correctness, có thể fix sau.
+
+## Restore từ Drive
+
+```bash
+# Download từ Drive (qua web UI hoặc Drive Desktop)
+# → /Volumes/Space/Claude/zoom-calendar-bot/restore_<TS>/
+
+# Extract
+tar -xzf <TS>__data.tar.gz   # → restores data/
+tar -xzf <TS>__bot.tar.gz    # → restores bot/
+
+# Restore DB từ data/backups/
+LATEST=$(ls -t data/backups/db_*.sql.gz | head -1)
+gunzip -c "$LATEST" | sqlite3 data/events_restored.db
+```
 
 ## Disk footprint dự kiến
 
-- DB dump ~3KB/file × 90 ngày = ~270KB
-- Memory snapshot ~40KB × 90 ngày = ~3.6MB
-- **Tổng < 5MB sau 90 ngày** — không lo full ổ.
+- **Local** (data/backups + memory_backups): < 5MB sau 90 ngày
+- **Drive** (data + bot archives): ~80KB × 90 ngày = **~7MB** trong Drive 15GB free
+
+## Quota Drive API
+
+Drive API có 1B requests/ngày free. Mỗi backup = 4-5 calls (find folder, create file × 2,
+list cleanup). Daily 23h = ~5 calls/ngày → không bao giờ hit quota.

@@ -29,10 +29,19 @@ fi
 bash scripts/backup_memory.sh >> "$LOG_FILE" 2>&1
 MEM_RC=$?
 
+# 3. Upload data/ + bot/ archives lên Google Drive
+#    (cần GOOGLE_REFRESH_TOKEN có scope drive.file — chạy get_refresh_token.py 1 lần)
+if [ -x "$PYTHON_BIN" ]; then
+    "$PYTHON_BIN" scripts/backup_to_drive.py >> "$LOG_FILE" 2>&1
+    DRIVE_RC=$?
+else
+    DRIVE_RC=127
+fi
+
 # Summary
-echo "$(date '+%Y-%m-%d %H:%M:%S') [all] DB rc=$DB_RC · memory rc=$MEM_RC" >> "$LOG_FILE"
-if [ "$DB_RC" -eq 0 ] && [ "$MEM_RC" -eq 0 ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [all] ✓ All backups OK" >> "$LOG_FILE"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [all] DB rc=$DB_RC · memory rc=$MEM_RC · drive rc=$DRIVE_RC" >> "$LOG_FILE"
+if [ "$DB_RC" -eq 0 ] && [ "$MEM_RC" -eq 0 ] && [ "$DRIVE_RC" -eq 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [all] ✓ All backups OK (local + Drive)" >> "$LOG_FILE"
     exit 0
 fi
 echo "$(date '+%Y-%m-%d %H:%M:%S') [all] ⚠ Some backups failed — check log" >> "$LOG_FILE"
