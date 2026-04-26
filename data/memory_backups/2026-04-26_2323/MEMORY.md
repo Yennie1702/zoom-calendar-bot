@@ -1,0 +1,7 @@
+- [Telegram MCP lacks inbound polling](project_telegram_mcp_missing_poll.md) — autonomous intake loop blocked: telegram-bot MCP has no getUpdates tool, only send
+- [Zoom+Calendar Telegram bot (JA Scheduler)](project_zoom_calendar_bot.md) — Python bot deployed Render; env vars, Zoom scopes, OAuth published, notify toggle
+- [Calendar invite template — chị Yến style](feedback_calendar_template.md) — bỏ 2 câu brief cũ, thay bằng "Anh chị tham gia zoom đúng giờ nhé", không SĐT
+- [Secret rotation playbook](feedback_secret_rotation.md) — Google/Zoom/Telegram/Turso rotation order; which providers support zero-downtime vs nuclear-only
+- [Use case library formatting](feedback_usecase_formatting.md) — /usecase POST phải có `\n` xuống dòng trong giai_phap_ai/ket_qua/duc_ket/huong_dan; dùng `curl --data-binary @file`
+- [GitHub Actions keep-alive](reference_github_actions_keep_alive.md) — giữ Render free tier warm bằng cron workflow 10p; 0đ; gotcha PAT scope `workflow`
+- [JA Scheduler Phase 1-3 features (2026-04-23)](project_ja_scheduler_features_2026-04-23.md) — natural target, clone, cảnh báo trùng, reminder 30p, digest 7h; Phase 4 bulk ops chưa làm
