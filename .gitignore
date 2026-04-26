@@ -24,10 +24,6 @@ logs/
 *.log
 
 # SQLite data (chứa email khách + zoom passcode — tuyệt đối không leak lên Git)
-data/
-*.db
-*.sqlite
-*.sqlite3
 
 # IDE
 .vscode/
