@@ -40,6 +40,8 @@ class ParsedCommand:
     recurring: dict | None = None  # {"byday": "WE", "count": 12} or None
     raw_labels: dict[str, str] = field(default_factory=dict)
     is_personal: bool = False  # True khi keyword mở đầu là "HY" (lịch cá nhân)
+    # Phase 13: warnings từ directory.resolve_attendees_line khi tên không khớp sổ
+    attendees_problems: list[str] = field(default_factory=list)
 
 
 # Vietnamese weekday → RRULE BYDAY

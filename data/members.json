@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "members": [
+    {"name": "MXD", "email": "maixuandat@okrs.vn", "title": ""},
+    {"name": "Thuỳ", "email": "vukimthuy@john.vn", "title": ""},
+    {"name": "Toàn", "email": "nguyenmanhtoan@john.vn", "title": ""},
+    {"name": "Tuấn", "email": "dangtrantuan@john.vn", "title": ""},
+    {"name": "Hương", "email": "ngoquynhhuong@john.vn", "title": ""},
+    {"name": "Oanh", "email": "vungocoanh@john.vn", "title": ""},
+    {"name": "Hà", "email": "tranthithuha@john.vn", "title": ""},
+    {"name": "Thảo 1", "email": "nguyenphuongthao@john.vn", "title": ""},
+    {"name": "Thảo 2", "email": "nguyenthiphuongthao@john.vn", "title": ""},
+    {"name": "Yến", "email": "nguyenthihaiyen@john.vn", "title": ""}
+  ]
+}

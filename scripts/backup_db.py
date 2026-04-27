@@ -28,7 +28,7 @@ BACKUP_RETENTION_DAYS = 90
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 # Tables to dump (order matters: parents first)
-TABLES = ["events", "bot_meta", "external_reminders_sent"]
+TABLES = ["events", "bot_meta", "external_reminders_sent", "members"]
 
 
 # ── Logging ─────────────────────────────────────────────────────────────────
