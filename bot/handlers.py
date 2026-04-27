@@ -645,22 +645,43 @@ def _ext_delete_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 # ── Directory picker (Section 14) ─────────────────────────────────────────────
-def _create_preview_keyboard(*, has_attendees: bool = False) -> InlineKeyboardMarkup:
-    """Keyboard cho preview tạo lịch — confirm + sổ + (optional) sửa danh sách."""
+def _create_preview_keyboard(
+    *, has_attendees: bool = False, has_unpicked_in_directory: bool = True,
+) -> InlineKeyboardMarkup:
+    """Keyboard cho preview tạo lịch — confirm + sổ + (optional) sửa danh sách.
+
+    `has_unpicked_in_directory`: còn member nào trong sổ chưa thuộc danh sách
+    khách hay không. False → ẩn nút `📇 Thêm từ sổ` (không có ai để thêm).
+    """
     rows = [[
         InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
         InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
     ]]
-    secondary = [
-        InlineKeyboardButton("📇 Thêm từ sổ", callback_data="dir_open:create"),
-    ]
+    secondary = []
+    if has_unpicked_in_directory:
+        secondary.append(InlineKeyboardButton(
+            "📇 Thêm từ sổ", callback_data="dir_open:create"
+        ))
     if has_attendees:
         # Phase 14 — review picker: hiện chỉ khi đã có khách để untick
         secondary.append(InlineKeyboardButton(
             "📋 Sửa danh sách", callback_data="rev_open:create"
         ))
-    rows.append(secondary)
+    if secondary:
+        rows.append(secondary)
     return InlineKeyboardMarkup(rows)
+
+
+def _preview_keyboard_for(cmd) -> InlineKeyboardMarkup:
+    """Helper: compute cả has_attendees + has_unpicked_in_directory từ cmd."""
+    attendees_lower = {e.lower() for e in (cmd.attendees or [])}
+    has_unpicked = any(
+        m.email not in attendees_lower for m in directory.list_members()
+    )
+    return _create_preview_keyboard(
+        has_attendees=bool(cmd.attendees),
+        has_unpicked_in_directory=has_unpicked,
+    )
 
 
 def _review_picker_keyboard(attendees: list[str]) -> InlineKeyboardMarkup:
@@ -881,7 +902,7 @@ async def _exit_dir_mode_back_to_create(
     )
     await query.edit_message_text(
         preview,
-        reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
+        reply_markup=_preview_keyboard_for(cmd),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -1167,7 +1188,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(
         preview,
-        reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
+        reply_markup=_preview_keyboard_for(cmd),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -1288,7 +1309,7 @@ async def _preview_clone(
         f"({source.topic}) — bản mới sẽ là:\n\n"
     )
     preview = header + formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
-    keyboard = _create_preview_keyboard(has_attendees=bool(cmd.attendees))
+    keyboard = _preview_keyboard_for(cmd)
     if hasattr(reply_target, "edit_message_text"):
         await reply_target.edit_message_text(
             preview, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
@@ -2020,7 +2041,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             )
             await query.edit_message_text(
                 preview,
-                reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
+                reply_markup=_preview_keyboard_for(cmd),
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
