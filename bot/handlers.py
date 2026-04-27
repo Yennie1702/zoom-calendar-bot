@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from bot import config, db, external_events, formatter
+from bot import config, db, directory, external_events, formatter
 from bot.calendar_client import CalendarClient
 from bot.parser import (
     CloneOverrides,
@@ -122,7 +122,8 @@ _HELP_TEXT_PART1 = (
     "• " + _code("/start") + ", " + _code("/help") + " — hướng dẫn\n"
     "• " + _code("/list") + " — quản lý lịch (xem · sửa · xoá · tìm · lọc)\n"
     "• " + _code("/today") + " — lịch hôm nay (digest on-demand)\n"
-    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả trên Calendar\n\n"
+    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả trên Calendar\n"
+    "• " + _code("/members") + " — sổ thành viên công ty (chọn nhanh khi tạo lịch)\n\n"
 
     # ─── 2. Create
     "🆕 <b>2. TẠO LỊCH</b>\n\n"
@@ -144,7 +145,8 @@ _HELP_TEXT_PART1 = (
         "- Nội dung: Chương trình Mentor MBOs\n"
         "- Mời khách: a@x.vn, b@y.vn"
     ) + "\n"
-    "→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.\n\n"
+    "→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.\n"
+    "💡 <i>Trong preview, bấm </i><b>📇 Sổ thành viên</b><i> để chọn email từ danh sách công ty thay vì gõ tay.</i>\n\n"
 
     "<b>2B. Lịch HY — cá nhân</b> 🔒 <i>(chỉ mình chị, Meet thay Zoom, private)</i>\n"
     "Keyword " + _code("HY") + " thay " + _code("Tạo lịch") + ". Bot:\n"
@@ -284,6 +286,18 @@ _HELP_TEXT_PART2 = (
     "• 🎯 lịch bot tạo · 🔁 lịch bot tạo + recurring\n"
     "• 🔒 lịch HY cá nhân (Meet, private)\n"
     "• 📅 lịch từ Calendar (không do bot tạo)\n\n"
+
+    # ─── Members directory
+    "📇 <b>11. SỔ THÀNH VIÊN CÔNG TY</b>\n"
+    "Lưu sẵn email cộng sự / đối tác → khi tạo lịch bấm chọn nhanh.\n"
+    + _pre(
+        "/members                            ← liệt kê sổ\n"
+        "/members add lan@abc.com Chị Lan    ← thêm\n"
+        "/members add a@x.vn Tên · Chức danh ← thêm kèm chức danh\n"
+        "/members rm lan@abc.com             ← xoá"
+    ) + "\n"
+    "Trong preview tạo lịch / khi ➕ Thêm khách: bấm <b>📇 Sổ thành viên</b> → "
+    "tick chọn → <b>✅ Xong</b>. Vẫn gõ email tay được như cũ.\n\n"
 
     "⚠️ <b>LƯU Ý</b>\n"
     "• Chỉ chị Hải Yến (chat_id whitelist) nhắn được.\n"
@@ -625,6 +639,399 @@ def _ext_delete_confirm_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+# ── Directory picker (Section 14) ─────────────────────────────────────────────
+def _create_preview_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard cho preview tạo lịch — confirm + sổ thành viên."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
+            InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
+        ],
+        [InlineKeyboardButton("📇 Sổ thành viên", callback_data="dir_open:create")],
+    ])
+
+
+def _att_add_prompt_keyboard(*, kind: str, event_id: int | None = None) -> InlineKeyboardMarkup:
+    """Đi kèm prompt 'Nhắn email cần THÊM' → cho phép mở sổ thay vì gõ tay.
+
+    `kind` = 'edit' (lịch bot tạo) | 'ext' (lịch external).
+    """
+    if kind == "edit" and event_id is not None:
+        cb = f"dir_open:edit:{event_id}"
+    else:
+        cb = "dir_open:ext"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📇 Sổ thành viên", callback_data=cb)],
+    ])
+
+
+def _directory_keyboard(
+    *,
+    members_on_page: list,
+    base_index: int,
+    page: int,
+    total_pages: int,
+    has_selection: bool,
+    has_unpicked: bool,
+) -> InlineKeyboardMarkup:
+    """Inline keyboard cho directory panel.
+
+    Layout:
+      [1] [2] [3] [4]
+      [5] [6] [7] [8]
+      [📋 Chọn tất cả]  [🔄 Bỏ chọn]
+      [◀] [page/total] [▶]   (nếu nhiều trang)
+      [✅ Xong] [❌ Huỷ]
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if members_on_page:
+        nums = [
+            InlineKeyboardButton(
+                str(base_index + i + 1),
+                callback_data=f"dir_t:{base_index + i}",
+            )
+            for i in range(len(members_on_page))
+        ]
+        for i in range(0, len(nums), 4):
+            rows.append(nums[i:i + 4])
+
+    # Bulk actions — áp dụng cho TOÀN BỘ sổ, không chỉ trang hiện tại
+    bulk_row = []
+    if has_unpicked:
+        bulk_row.append(InlineKeyboardButton(
+            "📋 Chọn tất cả", callback_data="dir_all"
+        ))
+    if has_selection:
+        bulk_row.append(InlineKeyboardButton(
+            "🔄 Bỏ chọn", callback_data="dir_clear"
+        ))
+    if bulk_row:
+        rows.append(bulk_row)
+
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("◀", callback_data=f"dir_p:{page - 1}"))
+        nav.append(InlineKeyboardButton(
+            f"· {page}/{total_pages} ·", callback_data="dir_noop"
+        ))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton("▶", callback_data=f"dir_p:{page + 1}"))
+        rows.append(nav)
+    done_label = "✅ Xong" if has_selection else "✅ Đóng"
+    rows.append([
+        InlineKeyboardButton(done_label, callback_data="dir_done"),
+        InlineKeyboardButton("❌ Huỷ", callback_data="dir_cancel"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _base_attendees_for_dir_mode(ctx: ContextTypes.DEFAULT_TYPE) -> list[str]:
+    """Pull current attendees từ pending state tuỳ kind — để hiển thị '✓' / dedupe merge."""
+    dm = ctx.chat_data.get("dir_mode") or {}
+    kind = dm.get("kind")
+    if kind == "create":
+        cmd = ctx.chat_data.get("pending")
+        if cmd:
+            return list(cmd.attendees or [])
+    elif kind == "edit_add":
+        eid = dm.get("event_id")
+        if eid:
+            row = db.get_event(int(eid))
+            if row:
+                return list(row.attendees or [])
+    elif kind == "ext_add":
+        occ = ctx.chat_data.get("current_ext")
+        if occ:
+            return list(occ.get("attendees") or [])
+    return []
+
+
+async def _render_directory_panel(query, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Edit current message thành directory panel theo state hiện tại."""
+    dm = ctx.chat_data.get("dir_mode")
+    if not dm:
+        await query.edit_message_text(
+            "⚠️ Phiên chọn sổ đã hết hạn. Mở lại từ preview tạo lịch giúp em."
+        )
+        return
+    page = int(dm.get("page", 1))
+    members_on_page, total_pages, page = directory.page_slice(page)
+    dm["page"] = page  # clamp & persist
+    base = {e.lower() for e in _base_attendees_for_dir_mode(ctx)}
+    selected = set(dm.get("selected_emails") or [])
+    text = formatter.format_directory_panel(
+        members_on_page=members_on_page,
+        page=page,
+        total_pages=total_pages,
+        selected_emails=selected,
+        base_emails=base,
+        base_index=(page - 1) * directory.PAGE_SIZE,
+        kind=dm.get("kind", "create"),
+    )
+    has_pick = any(e not in base for e in selected)
+    # Unpicked = thành viên TOÀN SỔ chưa được tick (selected) và chưa thuộc base
+    all_emails = {m.email for m in directory.list_members()}
+    has_unpicked = any(
+        e not in selected and e not in base for e in all_emails
+    )
+    markup = _directory_keyboard(
+        members_on_page=members_on_page,
+        base_index=(page - 1) * directory.PAGE_SIZE,
+        page=page,
+        total_pages=total_pages,
+        has_selection=has_pick,
+        has_unpicked=has_unpicked,
+    )
+    await query.edit_message_text(
+        text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+    )
+
+
+def _enter_dir_mode(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    *,
+    kind: str,
+    event_id: int | None = None,
+) -> None:
+    """Khởi tạo state dir_mode. selected_emails khởi tạo từ base attendees để
+    người chọn thấy ngay '✓' của những người vốn đã có trong lịch."""
+    base = []
+    if kind == "create":
+        cmd = ctx.chat_data.get("pending")
+        if cmd:
+            base = list(cmd.attendees or [])
+    elif kind == "edit_add" and event_id is not None:
+        row = db.get_event(int(event_id))
+        if row:
+            base = list(row.attendees or [])
+    elif kind == "ext_add":
+        occ = ctx.chat_data.get("current_ext") or {}
+        base = list(occ.get("attendees") or [])
+    ctx.chat_data["dir_mode"] = {
+        "kind": kind,
+        "page": 1,
+        "selected_emails": [e.lower() for e in base],
+        "event_id": int(event_id) if event_id is not None else None,
+    }
+
+
+async def _exit_dir_mode_back_to_create(
+    query, ctx: ContextTypes.DEFAULT_TYPE, *, apply: bool,
+) -> None:
+    """Đóng directory mode, quay về preview tạo lịch (kind='create')."""
+    dm = ctx.chat_data.pop("dir_mode", None) or {}
+    cmd = ctx.chat_data.get("pending")
+    if cmd is None:
+        await query.edit_message_text(
+            "⚠️ Phiên tạo lịch đã hết hạn. Gửi lại lệnh tạo giúp em nhé."
+        )
+        return
+    if apply:
+        base_lower = {e.lower() for e in (cmd.attendees or [])}
+        picked_new = [
+            e for e in dm.get("selected_emails", [])
+            if e.lower() not in base_lower
+        ]
+        if picked_new:
+            cmd.attendees = list(dict.fromkeys([*cmd.attendees, *picked_new]))
+            ctx.chat_data["pending"] = cmd
+    conflicts = _collect_conflicts_for(cmd)
+    preview = (
+        formatter.format_confirm_preview(cmd)
+        + formatter.format_conflict_warning(conflicts)
+    )
+    await query.edit_message_text(
+        preview,
+        reply_markup=_create_preview_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def _exit_dir_mode_to_edit_add(
+    query, ctx: ContextTypes.DEFAULT_TYPE, *, apply: bool,
+) -> None:
+    """Đóng directory mode, đi vào confirm-edit flow cho field 'att_add'."""
+    dm = ctx.chat_data.pop("dir_mode", None) or {}
+    event_id = dm.get("event_id")
+    if event_id is None:
+        await query.edit_message_text("⚠️ Phiên sửa đã hết hạn.")
+        return
+    row = db.get_event(int(event_id))
+    if not row or row.status != "active":
+        await query.edit_message_text("⚠️ Lịch không còn tồn tại.")
+        return
+    if not apply:
+        # Quay lại edit menu — chị có thể bấm field khác
+        await query.edit_message_text(
+            f"❌ Đã huỷ chọn sổ.\n\n✏️ Sửa lịch id={event_id}: *{row.topic}*\nChọn field:",
+            reply_markup=_edit_menu_keyboard(event_id, recurring=bool(row.recurring)),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    base_lower = {e.lower() for e in (row.attendees or [])}
+    picked_new = [
+        e for e in dm.get("selected_emails", []) if e.lower() not in base_lower
+    ]
+    if not picked_new:
+        await query.edit_message_text(
+            "⚠️ Chị chưa chọn ai mới (những người tick sẵn là khách đã có trong lịch). "
+            "Mở lại sổ và chọn người mới giúp em nhé.",
+            reply_markup=_edit_menu_keyboard(event_id, recurring=bool(row.recurring)),
+        )
+        return
+    try:
+        new_value, display = _parse_edit(row, "att_add", ", ".join(picked_new))
+    except ParseError as e:
+        await query.edit_message_text(f"⚠️ {e}")
+        return
+    ctx.chat_data["pending_edit"] = {
+        "event_id": event_id,
+        "field": "att_add",
+        "new_value": new_value,
+        "display": display,
+    }
+    preview = formatter.format_edit_preview(row, "att_add", display)
+    await query.edit_message_text(
+        preview,
+        reply_markup=_edit_confirm_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def _exit_dir_mode_to_ext_add(
+    query, ctx: ContextTypes.DEFAULT_TYPE, *, apply: bool,
+) -> None:
+    """Đóng directory mode, đi vào confirm-ext-edit cho 'att_add'."""
+    dm = ctx.chat_data.pop("dir_mode", None) or {}
+    occ = ctx.chat_data.get("current_ext")
+    if not occ:
+        await query.edit_message_text("⚠️ Không còn dữ liệu lịch Calendar.")
+        return
+    if not apply:
+        await query.edit_message_text(
+            f"❌ Đã huỷ chọn sổ.\n\n✏️ Sửa lịch Calendar *{occ['topic']}*\nChọn field:",
+            reply_markup=_ext_edit_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    base_lower = {e.lower() for e in (occ.get("attendees") or [])}
+    picked_new = [
+        e for e in dm.get("selected_emails", []) if e.lower() not in base_lower
+    ]
+    if not picked_new:
+        await query.edit_message_text(
+            "⚠️ Chị chưa chọn ai mới (những người tick sẵn là khách đã có trong lịch).",
+            reply_markup=_ext_edit_menu_keyboard(),
+        )
+        return
+    try:
+        new_value, display = _parse_ext_edit(occ, "att_add", ", ".join(picked_new))
+    except ParseError as e:
+        await query.edit_message_text(f"⚠️ {e}")
+        return
+    ctx.chat_data["pending_ext_edit"] = {
+        "field": "att_add", "new_value": new_value, "display": display,
+    }
+    preview = formatter.format_external_edit_preview(occ, "att_add", display)
+    await query.edit_message_text(
+        preview,
+        reply_markup=_ext_edit_confirm_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ── /members command ──────────────────────────────────────────────────────────
+async def cmd_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/members` — xem / thêm / xoá thành viên trong sổ."""
+    if not _is_allowed(update):
+        await _reject(update)
+        return
+    args = ctx.args or []
+    if not args:
+        members = directory.list_members()
+        if not members:
+            await update.message.reply_text(
+                "📭 Sổ thành viên trống.\n\n"
+                "Thêm bằng:\n"
+                "  `/members add <email> <tên>`\n"
+                "  `/members add lan@abc.com Chị Lan`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        lines = [f"📇 *Sổ thành viên công ty* ({len(members)} người):\n"]
+        for i, m in enumerate(members, 1):
+            title = f" · {m.title}" if m.title else ""
+            lines.append(f"{i}. *{m.name}*{title} · `{m.email}`")
+        lines.append("")
+        lines.append("_Thêm: `/members add <email> <tên>`_")
+        lines.append("_Xoá: `/members rm <email>`_")
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    sub = args[0].lower()
+    if sub == "add":
+        if len(args) < 3:
+            await update.message.reply_text(
+                "⚠️ Format: `/members add <email> <tên>` "
+                "(VD: `/members add lan@abc.com Chị Lan`)",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        email = args[1]
+        # Phần còn lại = tên (cho phép có dấu cách trong tên)
+        rest = " ".join(args[2:]).strip()
+        # Cho phép format "Name · Title" để tách title (tuỳ chọn)
+        if " · " in rest:
+            name, _, title = rest.partition(" · ")
+        else:
+            name, title = rest, ""
+        try:
+            m = directory.add_member(name=name.strip(), email=email, title=title.strip())
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ {e}")
+            return
+        await update.message.reply_text(
+            f"✅ Đã thêm: *{m.name}* · `{m.email}`"
+            + (f" · {m.title}" if m.title else "")
+            + f"\n\nSổ hiện có {len(directory.list_members())} người.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if sub in ("rm", "remove", "delete", "del", "xoá", "xoa"):
+        if len(args) < 2:
+            await update.message.reply_text(
+                "⚠️ Format: `/members rm <email>`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        email = args[1]
+        ok = directory.remove_member(email)
+        if ok:
+            await update.message.reply_text(
+                f"🗑 Đã xoá `{email}` khỏi sổ.\n"
+                f"Sổ còn {len(directory.list_members())} người.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ Không tìm thấy `{email}` trong sổ.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        return
+
+    await update.message.reply_text(
+        "⚠️ Dùng:\n"
+        "• `/members` — xem sổ\n"
+        "• `/members add <email> <tên>` — thêm\n"
+        "• `/members rm <email>` — xoá",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # ── Text handler: create-parse OR edit-value (depending on state) ─────────────
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update):
@@ -639,11 +1046,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                   ("pending", "pending_edit", "pending_delete", "pending_sync",
                    "edit_mode", "pending_quick_disambig",
                    "pending_clone_disambig",
-                   "ext_edit_mode", "pending_ext_edit"))
+                   "ext_edit_mode", "pending_ext_edit", "dir_mode"))
         for k in ("pending", "pending_edit", "pending_delete",
                   "pending_sync", "edit_mode", "occurrences",
                   "pending_quick_disambig", "pending_clone_disambig",
-                  "ext_edit_mode", "pending_ext_edit"):
+                  "ext_edit_mode", "pending_ext_edit", "dir_mode"):
             ctx.chat_data.pop(k, None)
         await update.message.reply_text(
             "✅ Đã huỷ trạng thái chờ." if had else "ℹ️ Không có gì đang chờ."
@@ -710,15 +1117,38 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ Lỗi parser. Em check log.")
         return
 
+    # Phase 13 — resolve tên thành email từ sổ (chị có thể gõ "Lan" thay
+    # "lan@abc.com" trong dòng "- Khách:"). Không match → giữ warning trong preview.
+    _resolve_attendees_into_cmd(cmd)
+
     ctx.chat_data["pending"] = cmd
     conflicts = _collect_conflicts_for(cmd)
-    preview = formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
-        InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
-    ]])
-    await update.message.reply_text(preview, reply_markup=keyboard,
-                                     parse_mode=ParseMode.MARKDOWN)
+    preview = (
+        formatter.format_confirm_preview(cmd)
+        + formatter.format_conflict_warning(conflicts)
+    )
+    await update.message.reply_text(
+        preview,
+        reply_markup=_create_preview_keyboard(),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+def _resolve_attendees_into_cmd(cmd: ParsedCommand) -> None:
+    """Ghi đè cmd.attendees bằng kết quả resolve qua sổ thành viên (Phase 13).
+
+    Idempotent: nếu raw_labels không có 'attendees' thì không làm gì.
+    """
+    raw = (cmd.raw_labels or {}).get("attendees") if hasattr(cmd, "raw_labels") else None
+    if not raw:
+        return
+    try:
+        resolved, problems = directory.resolve_attendees_line(raw)
+    except Exception:
+        log.exception("resolve_attendees_line fail — giữ list cũ")
+        return
+    cmd.attendees = resolved
+    cmd.attendees_problems = [p.error for p in problems if p.error]
 
 
 # ── Clone flow ────────────────────────────────────────────────────────────────
@@ -820,10 +1250,7 @@ async def _preview_clone(
         f"({source.topic}) — bản mới sẽ là:\n\n"
     )
     preview = header + formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
-        InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
-    ]])
+    keyboard = _create_preview_keyboard()
     if hasattr(reply_target, "edit_message_text"):
         await reply_target.edit_message_text(
             preview, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
@@ -909,7 +1336,10 @@ async def _handle_edit_value(
 
 
 def _parse_edit(row: db.EventRow, field: str, text: str):
-    """Return (new_value, human_display_string)."""
+    """Return (new_value, human_display_string).
+
+    Phase 13: với att_add / att_rm, chấp nhận tên member trong sổ thay email.
+    """
     if field == "time":
         dt = parse_edit_time(text, base=row.start_dt)
         return dt.isoformat(timespec="seconds"), f"🕐 {dt.day}/{dt.month}/{dt.year} {dt.hour:02d}:{dt.minute:02d}"
@@ -917,14 +1347,14 @@ def _parse_edit(row: db.EventRow, field: str, text: str):
         n = parse_edit_duration(text)
         return n, f"⏱ {n} phút"
     if field == "att_add":
-        emails = parse_edit_emails(text)
+        emails = _resolve_attendees_for_edit(text)
         merged = list(dict.fromkeys([*row.attendees, *emails]))
         added = [e for e in emails if e not in row.attendees]
         if not added:
             raise ParseError("Các email này đã có trong lịch rồi.")
         return merged, "➕ Thêm: " + ", ".join(added) + f"\n→ Sau khi sửa: {len(merged)} khách"
     if field == "att_rm":
-        emails = parse_edit_emails(text)
+        emails = _resolve_attendees_for_edit(text)
         remaining = [e for e in row.attendees if e not in emails]
         removed = [e for e in emails if e in row.attendees]
         if not removed:
@@ -937,6 +1367,29 @@ def _parse_edit(row: db.EventRow, field: str, text: str):
         v = parse_edit_plain(text, label="Nội dung")
         return v, f"🎯 {v}"
     raise ParseError(f"Field không hợp lệ: {field}")
+
+
+def _resolve_attendees_for_edit(text: str) -> list[str]:
+    """Phase 13 — resolve text input (cả tên lẫn email) thành email list.
+
+    Raises ParseError nếu có token không match được, để user thấy ngay.
+    """
+    try:
+        resolved, problems = directory.resolve_attendees_line(text)
+    except Exception:
+        log.exception("resolve_attendees_line fail")
+        # Fallback về regex-only
+        return parse_edit_emails(text)
+    if problems:
+        lines = ["Em không hiểu một số tên:"]
+        for p in problems:
+            if p.error:
+                lines.append(f"  • {p.error}")
+        lines.append("Chị nhắn lại bằng email đầy đủ hoặc /members add trước.")
+        raise ParseError("\n".join(lines))
+    if not resolved:
+        raise ParseError("Em không tìm thấy email nào. Nhắn dạng `a@x.vn, b@y.vn` hoặc tên trong sổ.")
+    return resolved
 
 
 # ── Drag-drop sync: pull Calendar state into DB + Zoom ────────────────────────
@@ -1322,7 +1775,147 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             return
         if data == "cr_cancel":
             ctx.chat_data.pop("pending", None)
+            ctx.chat_data.pop("dir_mode", None)
             await query.edit_message_text("❌ Đã huỷ tạo lịch. Gửi lệnh mới khi cần nhé.")
+            return
+
+        # ── Directory picker (Section 14) ────────────────────────────────────
+        if data == "dir_noop":
+            return
+
+        if data.startswith("dir_open:"):
+            parts = data.split(":")
+            kind_raw = parts[1] if len(parts) > 1 else ""
+            event_id: int | None = None
+            if kind_raw == "create":
+                kind = "create"
+            elif kind_raw == "edit" and len(parts) > 2:
+                kind = "edit_add"
+                try:
+                    event_id = int(parts[2])
+                except ValueError:
+                    await query.edit_message_text("⚠️ Callback hỏng.")
+                    return
+            elif kind_raw == "ext":
+                kind = "ext_add"
+                # ext_add cần có current_ext
+                if not ctx.chat_data.get("current_ext"):
+                    await query.edit_message_text("⚠️ Không còn dữ liệu lịch Calendar.")
+                    return
+            else:
+                await query.edit_message_text("⚠️ Callback hỏng.")
+                return
+            _enter_dir_mode(ctx, kind=kind, event_id=event_id)
+            await _render_directory_panel(query, ctx)
+            return
+
+        if data.startswith("dir_p:"):
+            try:
+                page = int(data.split(":", 1)[1])
+            except ValueError:
+                return
+            dm = ctx.chat_data.get("dir_mode")
+            if not dm:
+                await query.edit_message_text("⚠️ Phiên chọn sổ đã hết hạn.")
+                return
+            dm["page"] = max(1, page)
+            await _render_directory_panel(query, ctx)
+            return
+
+        if data == "dir_all":
+            dm = ctx.chat_data.get("dir_mode")
+            if not dm:
+                await query.edit_message_text("⚠️ Phiên chọn sổ đã hết hạn.")
+                return
+            # Tick TOÀN BỘ thành viên trong sổ. Base attendees giữ nguyên ✓.
+            base_emails = {e.lower() for e in _base_attendees_for_dir_mode(ctx)}
+            all_emails = [m.email for m in directory.list_members()]
+            sel = list(dm.get("selected_emails") or [])
+            sel_set = set(sel)
+            for e in all_emails:
+                if e in base_emails:
+                    # Vẫn lưu để hiển thị ✓; không thêm trùng
+                    if e not in sel_set:
+                        sel.append(e)
+                        sel_set.add(e)
+                else:
+                    if e not in sel_set:
+                        sel.append(e)
+                        sel_set.add(e)
+            dm["selected_emails"] = sel
+            await _render_directory_panel(query, ctx)
+            return
+
+        if data == "dir_clear":
+            dm = ctx.chat_data.get("dir_mode")
+            if not dm:
+                await query.edit_message_text("⚠️ Phiên chọn sổ đã hết hạn.")
+                return
+            # Reset về base — chỉ giữ lại những người vốn đã trong lịch (✓)
+            base_emails = [e.lower() for e in _base_attendees_for_dir_mode(ctx)]
+            dm["selected_emails"] = base_emails
+            await _render_directory_panel(query, ctx)
+            return
+
+        if data.startswith("dir_t:"):
+            try:
+                idx = int(data.split(":", 1)[1])
+            except ValueError:
+                return
+            dm = ctx.chat_data.get("dir_mode")
+            if not dm:
+                await query.edit_message_text("⚠️ Phiên chọn sổ đã hết hạn.")
+                return
+            m = directory.member_at_index(idx)
+            if m is None:
+                # Sổ thay đổi giữa session — re-render với danh sách mới
+                await _render_directory_panel(query, ctx)
+                return
+            email = m.email
+            sel = list(dm.get("selected_emails") or [])
+            base_emails = {e.lower() for e in _base_attendees_for_dir_mode(ctx)}
+            if email in base_emails:
+                # Người này đã có trong lịch — không cho toggle off (picker chỉ ADD)
+                # Nhưng vẫn re-render để tránh dead-feel
+                await _render_directory_panel(query, ctx)
+                return
+            if email in sel:
+                sel = [e for e in sel if e != email]
+            else:
+                sel.append(email)
+            dm["selected_emails"] = sel
+            await _render_directory_panel(query, ctx)
+            return
+
+        if data == "dir_done":
+            dm = ctx.chat_data.get("dir_mode")
+            if not dm:
+                await query.edit_message_text("⚠️ Phiên chọn sổ đã hết hạn.")
+                return
+            kind = dm.get("kind")
+            if kind == "create":
+                await _exit_dir_mode_back_to_create(query, ctx, apply=True)
+            elif kind == "edit_add":
+                await _exit_dir_mode_to_edit_add(query, ctx, apply=True)
+            elif kind == "ext_add":
+                await _exit_dir_mode_to_ext_add(query, ctx, apply=True)
+            else:
+                ctx.chat_data.pop("dir_mode", None)
+                await query.edit_message_text("❌ Phiên chọn sổ đã đóng.")
+            return
+
+        if data == "dir_cancel":
+            dm = ctx.chat_data.get("dir_mode") or {}
+            kind = dm.get("kind")
+            if kind == "create":
+                await _exit_dir_mode_back_to_create(query, ctx, apply=False)
+            elif kind == "edit_add":
+                await _exit_dir_mode_to_edit_add(query, ctx, apply=False)
+            elif kind == "ext_add":
+                await _exit_dir_mode_to_ext_add(query, ctx, apply=False)
+            else:
+                ctx.chat_data.pop("dir_mode", None)
+                await query.edit_message_text("❌ Đã đóng sổ.")
             return
 
         if data == "back_list":
@@ -1420,9 +2013,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 await query.edit_message_text("⚠️ Không còn dữ liệu lịch.")
                 return
             ctx.chat_data["ext_edit_mode"] = {"field": field}
+            extra_kb = (
+                _att_add_prompt_keyboard(kind="ext")
+                if field == "att_add" else None
+            )
             await query.edit_message_text(
                 f"✏️ *{formatter.edit_prompt(field)}*\n_(lịch từ Calendar)_",
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=extra_kb,
             )
             return
 
@@ -1480,9 +2078,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             _, eid, field = data.split(":", 2)
             event_id = int(eid)
             ctx.chat_data["edit_mode"] = {"event_id": event_id, "field": field}
+            extra_kb = (
+                _att_add_prompt_keyboard(kind="edit", event_id=event_id)
+                if field == "att_add" else None
+            )
             await query.edit_message_text(
                 f"✏️ *{formatter.edit_prompt(field)}*\n(id={event_id})",
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=extra_kb,
             )
             return
 

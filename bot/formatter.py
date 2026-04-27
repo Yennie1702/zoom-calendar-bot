@@ -121,6 +121,18 @@ def format_confirm_preview(cmd: ParsedCommand) -> str:
     else:
         header = "📋 Em hiểu lệnh như sau, chị xác nhận giúp em:\n\n"
 
+    problems_block = ""
+    problems = getattr(cmd, "attendees_problems", None) or []
+    if problems:
+        lines = ["", "⚠️ *Em không hiểu vài người trong dòng Khách:*"]
+        for p in problems:
+            lines.append(f"  • {p}")
+        lines.append(
+            "_Chị sửa lại bằng email đầy đủ, hoặc gõ `/members add <email> <tên>` "
+            "rồi gửi lại lệnh._"
+        )
+        problems_block = "\n".join(lines)
+
     return (
         header
         + f"🏷 *Tên:* {cmd.topic}\n"
@@ -128,6 +140,7 @@ def format_confirm_preview(cmd: ParsedCommand) -> str:
         + f"{recur_line}"
         + f"🎯 *Nội dung:* {cmd.agenda or '(không)'}\n"
         + f"👥 *Khách mời* ({len(cmd.attendees)} người):\n{attendees}"
+        + problems_block
     )
 
 
@@ -456,6 +469,62 @@ def format_external_edit_preview(occ: dict, field: str, new_display: str) -> str
         f"{new_display}\n\n"
         f"Chị xác nhận?"
     )
+
+
+def format_directory_panel(
+    *,
+    members_on_page: list,
+    page: int,
+    total_pages: int,
+    selected_emails: set[str],
+    base_emails: set[str],
+    base_index: int,
+    kind: str,
+) -> str:
+    """Render text panel cho member picker (Section 14.3 design doc).
+
+    `base_index` = (page-1) * PAGE_SIZE — global index của member đầu tiên trong slice,
+    để hiển thị đúng số thứ tự khớp với callback `dir_t:<idx>` (idx toàn cục).
+    """
+    kind_label = {
+        "create": "thêm KHÁCH cho lịch sắp tạo",
+        "edit_add": "thêm KHÁCH cho lịch đang sửa",
+        "ext_add": "thêm KHÁCH cho lịch Calendar đang sửa",
+    }.get(kind, "thêm KHÁCH")
+
+    if not members_on_page and total_pages == 1:
+        return (
+            "📇 *Sổ thành viên công ty*\n\n"
+            "📭 Sổ trống. Gõ `/members add <email> <tên>` để bắt đầu.\n"
+            "_VD: `/members add lan@abc.com Chị Lan`_"
+        )
+
+    lines = [
+        f"📇 *Sổ thành viên công ty* — bấm số để {kind_label}.",
+        f"_✓ = đã có trong khách mời · ✅ = chị vừa chọn ở phiên này_",
+        "",
+    ]
+    for i, m in enumerate(members_on_page):
+        idx = base_index + i
+        in_base = m.email in base_emails
+        picked_now = m.email in selected_emails and not in_base
+        if in_base:
+            tag = "✓"
+        elif picked_now:
+            tag = "✅"
+        else:
+            tag = "·"
+        title_part = f" · {m.title}" if m.title else ""
+        lines.append(f"{idx + 1}. {tag} *{m.name}*{title_part} · `{m.email}`")
+    lines.append("")
+    new_picks = [e for e in selected_emails if e not in base_emails]
+    if new_picks:
+        lines.append(f"🛒 Đã chọn ({len(new_picks)}): " + ", ".join(new_picks))
+    else:
+        lines.append("🛒 Chưa chọn ai mới — bấm số để thêm.")
+    if total_pages > 1:
+        lines.append(f"_Trang {page}/{total_pages}_")
+    return "\n".join(lines)
 
 
 def format_conflict_warning(conflicts: list[tuple[EventRow, str]]) -> str:

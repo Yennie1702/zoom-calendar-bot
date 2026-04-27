@@ -1,6 +1,6 @@
 # JA Scheduler Bot — Tài liệu Thiết kế Tính năng Chi tiết
 
-**Phiên bản:** 1.0 (2026-04-26)
+**Phiên bản:** 1.2 (2026-04-27)
 **Companion:** [01-system-design.md](01-system-design.md)
 
 ---
@@ -17,6 +17,12 @@
 8. [Sync drag-drop từ Calendar](#8-sync-drag-drop)
 9. [External Calendar — đọc + sửa/xoá qua bot](#9-external-calendar)
 10. [Backup pipeline (local + Drive)](#10-backup-pipeline)
+11. [Cross-cutting concerns](#11-cross-cutting-concerns)
+12. [Phase history](#12-phase-history)
+13. [Open questions](#13-open-questions--decisions-to-make)
+14. [Sổ thành viên công ty — `/members` + picker](#14-sổ-thành-viên-công-ty)
+15. [Storage backend cho Members (Phase 12)](#15-storage-backend-cho-members-phase-12)
+16. [Resolve tên thành email trong prompt (Phase 13)](#16-resolve-tên-thành-email-trong-prompt-phase-13)
 
 ---
 
@@ -687,4 +693,339 @@ Detail xem `scripts/BACKUP.md`.
 
 ---
 
-*Cập nhật cuối: 2026-04-26 — sau Phase 10 (Drive backup pipeline complete).*
+## 14. Sổ thành viên công ty
+
+**Mục tiêu:** mỗi lần tạo lịch, chị Yến không phải gõ tay email khách (dễ sai chính tả, mất thời gian). Bot có sẵn sổ danh sách thành viên/đối tác → chị bấm chọn nhanh, hoặc vẫn gõ email mới như cũ.
+
+**Nguyên tắc:** picker là **bổ sung**, không thay thế. Chị có thể (a) gõ Khách như cũ, (b) bấm sổ chọn nhanh, hoặc (c) kết hợp cả hai.
+
+### 14.1 Storage
+
+**File:** `data/members.json` (JSON, edit tay được, đi kèm backup pipeline ở Section 10).
+
+```json
+{
+  "version": 1,
+  "members": [
+    {"name": "Chị Hải Yến", "email": "nguyenthihaiyen@john.vn", "title": "PM dự án"},
+    {"name": "Sếp Đạt",     "email": "dat@john.vn",            "title": "CEO"},
+    {"name": "Linh",        "email": "linh@john.vn",           "title": "PM"}
+  ]
+}
+```
+
+| Field | Bắt buộc | Ghi chú |
+|---|---|---|
+| `name` | ✓ | Tên hiển thị trong picker (VD "Chị Lan", "Đạt (CEO)") |
+| `email` | ✓ | Khoá unique. Validate qua regex giống Khách trong tạo lịch |
+| `title` |  | Chức danh / phòng ban — render mờ sau tên |
+
+**Module:** `bot/directory.py` expose:
+- `list_members() -> list[Member]` — đọc + cache theo mtime, hot-reload khi file đổi.
+- `add_member(name, email, title='') -> Member` — append, atomic write tmp+rename.
+- `remove_member(email) -> bool` — xoá theo email (case-insensitive), trả True nếu có.
+- `find_by_email(email) -> Member | None` — tra ngược (dùng cho future: hiển thị tên kèm email trong reminder/preview).
+
+**Edge cases:**
+- File chưa tồn tại → trả list rỗng + bot gợi ý `/members add` lần đầu.
+- File JSON hỏng → log error, trả list rỗng (không crash bot).
+- Duplicate email khi add → reject, gợi ý `/members rm` trước.
+
+### 14.2 `/members` command
+
+| Dạng | Hành động |
+|---|---|
+| `/members` | Liệt kê toàn bộ sổ (1 dòng / người, format `name · title · email`) |
+| `/members add <email> <name>` hoặc `/members add <email> <name> · <title>` | Thêm thành viên |
+| `/members rm <email>` | Xoá thành viên |
+
+Validate email regex giống parser tạo lịch. Reply tiếng Việt thân mật.
+
+### 14.3 Picker UI — flow chuẩn
+
+**Trigger:** trong preview tạo lịch (work / HY / clone), bot kèm thêm nút `📇 Sổ thành viên` ở keyboard:
+
+```
+[✅ Xác nhận tạo] [❌ Huỷ]
+[📇 Sổ thành viên]
+```
+
+Bấm → bot edit message hiện tại sang panel directory:
+
+```
+📇 *Sổ thành viên công ty* — bấm để THÊM khách vào lịch
+✓ = đã có trong khách mời
+
+1. ✓ Chị Lan · Đối tác Coaching · lan@abc.com
+2.   Đạt · CEO · dat@john.vn
+3.   Linh · PM · linh@john.vn
+4.   Trang · Sales · trang@john.vn
+…
+```
+
+Inline keyboard:
+```
+[1] [2] [3] [4]               ← toggle 4 người/hàng
+[5] [6] [7] [8]
+[📋 Chọn tất cả] [🔄 Bỏ chọn] ← bulk actions (chỉ hiện khi áp dụng được)
+[◀]  [1/2]  [▶]               ← page nav (8 người/trang)
+[✅ Xong]  [❌ Huỷ]
+```
+
+- Bấm số → toggle email vào / ra `selected_emails`. Bot edit lại panel với `✓`/`·` cập nhật.
+- Bấm **📋 Chọn tất cả** → tick toàn bộ thành viên trong sổ (kể cả những trang khác). Hữu ích khi mời cả team rồi untick 1-2 người vắng. Nút chỉ hiện khi còn người chưa tick.
+- Bấm **🔄 Bỏ chọn** → reset về base (xoá hết tick mới, giữ nguyên ✓ của khách đã có sẵn). Nút chỉ hiện khi đã có ai đó được tick.
+- Bấm `✅ Xong` → bot quay lại preview tạo lịch với `attendees` = base attendees ∪ selected_emails (dedupe, preserve order).
+- Bấm `❌ Huỷ` → khôi phục preview, không thay đổi attendees.
+
+### 14.4 Picker tích hợp vào edit menu
+
+Khi chị bấm `➕ Thêm khách` trong edit menu (Section 2.4) hoặc external edit (Section 9.3), prompt vẫn cho phép gõ email tay, **đồng thời** kèm nút `📇 Sổ thành viên`:
+
+```
+✏️ Nhắn email cần THÊM (VD: a@x.vn, b@y.vn) — hoặc:
+[📇 Sổ thành viên]
+```
+
+Bấm sổ → mở panel cùng cơ chế. Bấm `✅ Xong` → emails được chọn coi như giá trị "Thêm khách" → đi vào `_parse_edit(field='att_add', text=','.join(emails))` → preview confirm bình thường (có notify toggle).
+
+### 14.5 State machine
+
+`ctx.chat_data["dir_mode"]`:
+```python
+{
+    "kind": "create" | "edit_add" | "ext_add",
+    "page": int,                     # 1-based
+    "selected_emails": list[str],    # đang trong giỏ
+    "event_id": int | None,          # khi kind=edit_add
+}
+```
+
+**Lifecycle:**
+- Set khi user bấm `dir_open:<kind>`. `selected_emails` khởi tạo từ attendees hiện có (cho hiển thị `✓`) — KHÔNG dùng để dedupe khi merge (xem dưới).
+- Update mỗi khi toggle / page nav.
+- Pop khi `✅ Xong` hoặc `❌ Huỷ` hoặc gõ `huỷ` (Section 11.2).
+
+**Merge logic khi `✅ Xong`:**
+- `kind="create"`: `cmd.attendees = list(dict.fromkeys([*cmd.attendees, *picked_new]))` với `picked_new = selected − base_attendees`. Đảm bảo: nếu chị bỏ tick 1 email vốn đã có trong lịch, KHÔNG remove email đó (picker chỉ ADD, không REMOVE — tránh nhầm lẫn).
+- `kind="edit_add"`: tương tự, nhưng đi qua `_parse_edit(row, "att_add", ", ".join(picked_new))`. Nếu `picked_new` rỗng → reply "Chị chưa chọn ai mới" và không vào confirm.
+- `kind="ext_add"`: tương tự `edit_add` cho external occ.
+
+### 14.6 Callback scheme
+
+| Callback data | Ý nghĩa |
+|---|---|
+| `dir_open:create` | Mở picker từ create preview |
+| `dir_open:edit:<event_id>` | Mở picker từ ed_f:att_add prompt |
+| `dir_open:ext` | Mở picker từ ext_ed_f:att_add prompt |
+| `dir_p:<page>` | Page nav |
+| `dir_t:<idx>` | Toggle thành viên ở index toàn cục `idx` |
+| `dir_done` | Apply selection, route lại flow gốc theo `kind` |
+| `dir_cancel` | Huỷ, route lại preview/prompt cũ |
+
+`idx` là **index trong list_members() đầy đủ** (không phụ thuộc page) → ổn định khi page nav.
+
+### 14.7 Edge cases
+
+- **Sổ rỗng** → khi mở picker, panel hiển thị `📭 Sổ thành viên trống. Gõ /members add <email> <name> để bắt đầu.` + nút `❌ Đóng`.
+- **Sổ thay đổi giữa session** (chị mở picker rồi `/members add` ở tab khác) → mtime cache invalidate; lần next render panel sẽ reload, idx có thể shift. Chấp nhận trade-off; selection trong giỏ vẫn giữ vì lưu theo email chứ không idx.
+- **Email trong sổ trùng email user gõ tay** trong câu lệnh tạo lịch → dedupe khi merge, không tạo trùng.
+- **Page out-of-range** (sau khi xoá member) → clamp về `total_pages`.
+
+### 14.8 Help text update
+
+Trong `/help` (Part 1), section "2. TẠO LỊCH" sau ví dụ Khách thêm 1 dòng:
+> _💡 Trong preview, bấm 📇 Sổ thành viên để chọn email từ danh sách công ty thay vì gõ tay._
+
+Trong section riêng "📇 SỔ THÀNH VIÊN":
+```
+/members                      ← liệt kê
+/members add a@x.vn Chị Lan   ← thêm
+/members rm a@x.vn            ← xoá
+```
+
+---
+
+## 15. Storage backend cho Members (Phase 12)
+
+**Vấn đề:** Phase 11 dùng `data/members.json`. Render Free filesystem ephemeral → mọi thay đổi qua `/members add` từ Telegram sẽ bị **mất khi service restart** (cold-start sau 15 phút idle, hoặc redeploy). Chị Yến không edit được sổ qua bot từ điện thoại.
+
+**Giải pháp:** dual backend giống `bot/db.py`:
+
+| Backend | Khi nào dùng | Persistence |
+|---|---|---|
+| **Turso libSQL** (production) | `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` có trong env | ✅ Persistent qua restart |
+| **JSON file** (local dev) | Không có Turso credentials | File `data/members.json` |
+
+### 15.1 Schema
+
+Thêm vào `_SCHEMA_STATEMENTS` của `bot/db.py`:
+
+```sql
+CREATE TABLE IF NOT EXISTS members (
+    email TEXT PRIMARY KEY,           -- normalized lowercase
+    name TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_members_sort
+    ON members (sort_order, email);
+```
+
+`sort_order`: stable position cho picker — newly added member nhận `MAX(sort_order) + 1`. Picker UI render theo thứ tự này.
+
+### 15.2 DB API
+
+`bot/db.py` thêm 4 hàm:
+
+| Hàm | Use |
+|---|---|
+| `list_members_db()` | Fetch toàn bộ rows, sort by `sort_order, email` |
+| `insert_member(email, name, title, sort_order=None)` | UPSERT — `ON CONFLICT(email) DO UPDATE` |
+| `delete_member(email)` | DELETE — trả `True` nếu có dòng bị xoá |
+| `count_members()` | Cho seed-on-empty check (xem 15.3) |
+
+### 15.3 One-time seed từ JSON
+
+Lần đầu deploy với Turso, bảng rỗng. Để chị Yến không phải `/members add` lại từ đầu:
+
+```python
+def _maybe_seed_from_json():
+    if _turso_seeded: return
+    if db.count_members() > 0:
+        _turso_seeded = True
+        return
+    json_members = _list_members_json()
+    for i, m in enumerate(json_members):
+        db.insert_member(email=m.email, name=m.name, title=m.title, sort_order=i)
+    _turso_seeded = True
+```
+
+Idempotent (singleton flag + count check). Sau khi seed, JSON file giữ nguyên làm artifact lịch sử nhưng không còn được đọc khi Turso configured.
+
+### 15.4 Backup pipeline cập nhật
+
+`scripts/backup_db.py` `TABLES = ["events", "bot_meta", "external_reminders_sent", "members"]` — Phase 10 launchd daily 23:00 sẽ dump cả members table. Restore via `gunzip -c db_*.sql.gz | sqlite3 ...` hoặc paste vào Turso shell.
+
+### 15.5 Migration/operate
+
+| Action | Cách làm |
+|---|---|
+| Lần đầu deploy với Turso | Push code → bot tự seed từ `data/members.json` đang có |
+| Bulk import danh sách lớn | Edit `data/members.json` local + commit + push (chạy seed lần đầu) HOẶC viết SQL `INSERT` paste vào Turso shell |
+| Sau seed, edit qua bot | `/members add <email> <name>` từ Telegram → ghi Turso, persistent |
+| Local dev không cần Turso | Bot tự fallback JSON, dev workflow không đổi |
+
+---
+
+## 16. Resolve tên thành email trong prompt (Phase 13)
+
+**Mục tiêu:** Telegram bot không hỗ trợ inline autocomplete khi user đang gõ tin nhắn (chỉ thấy text khi user bấm Send). Để mô phỏng workflow "gõ tên → bot tự thay thành email", em parse dòng `Khách:` thông minh hơn — chấp nhận **cả tên member trong sổ lẫn email**, mix tự do với dấu phẩy.
+
+### 16.1 UX
+
+Chị Yến gõ:
+```
+Tạo lịch "Tư vấn OKRs - Chị Lan":
+- Thời gian: 22/4/2026 14:00
+- Thời lượng: 30 phút
+- Nội dung: Tư vấn gói Coaching OKRs
+- Khách: Lan, Đạt, abc@external.com
+```
+
+Bot resolve:
+- `Lan` → tra sổ → match `Member(name="Chị Lan", email="lan@abc.com")` → email `lan@abc.com`
+- `Đạt` → match `Member(name="Sếp Đạt", email="dat@john.vn")` → email `dat@john.vn`
+- `abc@external.com` → đã là email hợp lệ → giữ nguyên
+
+Preview hiện 3 khách. Nếu một token không match → bot reply preview kèm warning, chị có thể (a) sửa text rồi gửi lại, (b) `/members add` rồi gửi lại, hoặc (c) bấm 📇 picker để chọn từ sổ.
+
+### 16.2 Match policy
+
+`directory.find_by_name(query)` trả members theo thứ tự ưu tiên:
+
+1. **Exact name** (case-insensitive) → ưu tiên cao nhất.
+2. **Prefix** — tên bắt đầu bằng query.
+3. **Substring** — query xuất hiện ở giữa tên.
+
+| Token | Sổ có | Kết quả |
+|---|---|---|
+| `Lan` | "Chị Lan" | exact-prefix match ⇒ ✓ |
+| `lan` | "Chị Lan" | substring match ⇒ ✓ |
+| `Đạt` | "Sếp Đạt" | substring match ⇒ ✓ |
+| `Linh` | "Linh", "Linh Trang" | 2 match → ambiguous, error |
+| `@lan` | "Chị Lan" | prefix `@` strip rồi match ⇒ ✓ |
+| `xyz` | (không có) | error: "không tìm thấy 'xyz' trong sổ" |
+| `lan@abc.com` | (bất kỳ) | email hợp lệ → giữ nguyên |
+
+### 16.3 API
+
+`bot/directory.py`:
+
+```python
+@dataclass
+class ResolutionResult:
+    raw: str                     # token gốc
+    email: str | None            # email cuối (None = fail)
+    member: Member | None        # member matched (None nếu là email gõ tay)
+    ambiguous: list[Member]      # nếu nhiều match
+    error: str | None            # message tiếng Việt nếu fail
+
+def resolve_token(token: str) -> ResolutionResult: ...
+
+def resolve_attendees_line(line: str) -> tuple[list[str], list[ResolutionResult]]:
+    """Phân tích cả dòng "Khách: a, b, c" → (resolved_emails, problems)."""
+```
+
+`resolve_attendees_line` split theo `[,;\n]+`, dedupe email, accumulate problems.
+
+### 16.4 Tích hợp vào flow
+
+| Flow | Tích hợp |
+|---|---|
+| Tạo lịch (work + HY) | `_resolve_attendees_into_cmd(cmd)` chạy ngay sau `parse_command(text)`. Ghi đè `cmd.attendees` + lưu warnings vào `cmd.attendees_problems` |
+| Edit "➕ Thêm khách" / "➖ Bỏ khách" | `_parse_edit(row, "att_add", text)` gọi `_resolve_attendees_for_edit(text)` thay cho `parse_edit_emails`. Nếu có problem → raise ParseError với message rõ ràng |
+| External edit | _Phase 13.1_ — chưa làm, fallback regex-only. (External edit khách hiếm, chị có 📇 picker rồi.) |
+| Clone overrides (`khách x, y`) | _Phase 13.1_ — giữ regex-only ban đầu. Chị có thể `/members add` trước khi clone nếu cần dùng tên |
+
+### 16.5 Warning trong preview
+
+`format_confirm_preview` thêm block khi `cmd.attendees_problems` non-empty:
+
+```
+👥 *Khách mời* (2 người):
+  • lan@abc.com
+  • dat@john.vn
+
+⚠️ *Em không hiểu vài người trong dòng Khách:*
+  • Tên "Linh" khớp 2 người trong sổ — em không biết chọn ai.
+  • Em không tìm thấy "ABC XYZ" trong sổ và đây không phải email.
+_Chị sửa lại bằng email đầy đủ, hoặc gõ `/members add <email> <tên>` rồi gửi lại lệnh._
+```
+
+User vẫn confirm được — bot tạo lịch với danh sách đã resolve được. Token không hiểu thì không invite ai, chị phải edit sau hoặc gửi lại.
+
+### 16.6 Trade-off
+
+- **Vẫn giữ option gõ email tay 100%** — nếu chị không muốn rely sổ, gõ `lan@abc.com, dat@john.vn` vẫn work hoàn hảo.
+- **Telegram không thể inline-autocomplete** → workflow tốt nhất em làm được là "gõ rồi resolve", chấp nhận đôi lúc cần edit lại nếu typo. Picker 📇 trong preview (Phase 11) vẫn là fallback nhanh.
+- **Ambiguity** chưa interactive (không cho user bấm chọn 1 trong N member match) — Phase 13.2 nếu cần. Hiện chấp nhận chị tự gõ tên đầy đủ hơn (VD "Chị Linh" thay vì "Linh") để không ambiguous.
+
+---
+
+## 17. Phase history (cập nhật)
+
+(Bảng ở Section 12 — lịch sử Phase 0-10. Bổ sung:)
+
+| Phase | Date | Mô tả |
+|---|---|---|
+| 11 | 2026-04-27 | Sổ thành viên công ty (`data/members.json`, `/members`, picker integrate vào create + edit flows) |
+| 12 | 2026-04-27 | Turso backend cho members (persistent qua Render restart, JSON fallback local dev) + auto-seed từ JSON lần đầu |
+| 13 | 2026-04-27 | Resolve tên member trong dòng `Khách:` của prompt — gõ "Lan, Đạt, abc@external.com" thay vì email đầy đủ. Áp dụng cho create + edit "Thêm khách" / "Bỏ khách" |
+
+---
+
+*Cập nhật cuối: 2026-04-27 — sau Phase 13 (Member name resolution in prompts).*

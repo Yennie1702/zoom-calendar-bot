@@ -17,7 +17,7 @@ Uninstall:
   launchctl unload ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
   rm              ~/Library/LaunchAgents/com.johnacademy.zoom-calendar-bot.backup.plist
 
-Logs: /Volumes/Space/Claude/zoom-calendar-bot/logs/backup.log
+Logs: /Volumes/Space/Claude/Projects/zoom-calendar-bot/logs/backup.log
 -->
 <plist version="1.0">
 <dict>
@@ -27,11 +27,11 @@ Logs: /Volumes/Space/Claude/zoom-calendar-bot/logs/backup.log
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Volumes/Space/Claude/zoom-calendar-bot/scripts/backup_all.sh</string>
+        <string>/Volumes/Space/Claude/Projects/zoom-calendar-bot/scripts/backup_all.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Volumes/Space/Claude/zoom-calendar-bot</string>
+    <string>/Volumes/Space/Claude/Projects/zoom-calendar-bot</string>
 
     <!-- Daily at 23:00 local time. Nếu máy đang sleep, launchd sẽ catch up
          khi máy wake (RunAtLoad=false không cần). -->
@@ -46,9 +46,9 @@ Logs: /Volumes/Space/Claude/zoom-calendar-bot/logs/backup.log
     <!-- launchd ghi stdout/stderr ra file dưới (backup_all.sh đã append vào
          logs/backup.log nên 2 file dưới chỉ có lỗi harness-level). -->
     <key>StandardOutPath</key>
-    <string>/Volumes/Space/Claude/zoom-calendar-bot/logs/backup.launchd.stdout.log</string>
+    <string>/Volumes/Space/Claude/Projects/zoom-calendar-bot/logs/backup.launchd.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Volumes/Space/Claude/zoom-calendar-bot/logs/backup.launchd.stderr.log</string>
+    <string>/Volumes/Space/Claude/Projects/zoom-calendar-bot/logs/backup.launchd.stderr.log</string>
 
     <!-- Tránh double-trigger nếu máy boot đúng 23h -->
     <key>RunAtLoad</key>

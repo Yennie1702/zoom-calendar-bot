@@ -50,6 +50,21 @@ _SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS ix_events_status_start
         ON events (status, start_local DESC)
     """,
+    # Phase 12 — sổ thành viên công ty (sync giữa local JSON và Turso)
+    """
+    CREATE TABLE IF NOT EXISTS members (
+        email TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_members_sort
+        ON members (sort_order, email)
+    """,
 ]
 
 
@@ -553,6 +568,75 @@ def mark_external_reminded(calendar_event_id: str, occurrence_iso: str) -> None:
             "(calendar_event_id, occurrence_iso, sent_at) VALUES (?, ?, ?)",
             (calendar_event_id, occurrence_iso, _now_iso()),
         )
+
+
+# ── Members directory (Phase 12) ──────────────────────────────────────────────
+def list_members_db() -> list[dict]:
+    """Return members ordered by sort_order then email. List of dicts (raw rows)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT email, name, title, sort_order FROM members "
+            "ORDER BY sort_order ASC, email ASC"
+        ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            out.append({
+                "email": r["email"],
+                "name": r["name"],
+                "title": r["title"] or "",
+                "sort_order": int(r["sort_order"]) if r["sort_order"] is not None else 0,
+            })
+        except (KeyError, IndexError, TypeError):
+            out.append({
+                "email": r[0], "name": r[1], "title": r[2] or "",
+                "sort_order": int(r[3]) if r[3] is not None else 0,
+            })
+    return out
+
+
+def insert_member(email: str, name: str, title: str = "", sort_order: int | None = None) -> None:
+    """Insert hoặc replace member. Email là PK (case-insensitive — caller normalize trước)."""
+    now = _now_iso()
+    if sort_order is None:
+        # Append cuối list — lấy max sort_order + 1
+        with _conn() as c:
+            r = c.execute("SELECT COALESCE(MAX(sort_order), -1) AS m FROM members").fetchone()
+        try:
+            current_max = int(r["m"] if r and (hasattr(r, "keys") or hasattr(r, "__getitem__")) else (r[0] if r else -1))
+        except (KeyError, IndexError, TypeError):
+            current_max = -1
+        sort_order = current_max + 1
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO members (email, name, title, sort_order, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET "
+            "name = excluded.name, title = excluded.title, updated_at = excluded.updated_at",
+            (email, name, title, sort_order, now, now),
+        )
+
+
+def delete_member(email: str) -> bool:
+    """Xoá member. Trả True nếu có dòng bị xoá."""
+    with _conn() as c:
+        # Check tồn tại trước (libsql-client không expose rowcount nhất quán)
+        r = c.execute("SELECT 1 FROM members WHERE email = ?", (email,)).fetchone()
+        if r is None:
+            return False
+        c.execute("DELETE FROM members WHERE email = ?", (email,))
+    return True
+
+
+def count_members() -> int:
+    with _conn() as c:
+        r = c.execute("SELECT COUNT(*) AS n FROM members").fetchone()
+    if r is None:
+        return 0
+    try:
+        return int(r["n"])
+    except (KeyError, IndexError, TypeError):
+        return int(r[0])
 
 
 def find_conflicts(
