@@ -146,7 +146,12 @@ _HELP_TEXT_PART1 = (
         "- Mời khách: a@x.vn, b@y.vn"
     ) + "\n"
     "→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.\n"
-    "💡 <i>Trong preview, bấm </i><b>📇 Sổ thành viên</b><i> để chọn email từ danh sách công ty thay vì gõ tay.</i>\n\n"
+    "💡 <b>Mẹo dòng Khách:</b>\n"
+    "• Gõ tên trong sổ thay email: <code>Khách: Toàn, Hương, Oanh</code>\n"
+    "• Mời cả team: <code>Khách: /all</code> (hoặc <code>tất cả</code>)\n"
+    "• Mix tự do: <code>Khách: /all, abc@external.com</code>\n"
+    "• Trong preview: bấm <b>📋 Sửa danh sách</b> để bỏ bớt người, "
+    "<b>📇 Thêm từ sổ</b> để chọn thêm.\n\n"
 
     "<b>2B. Lịch HY — cá nhân</b> 🔒 <i>(chỉ mình chị, Meet thay Zoom, private)</i>\n"
     "Keyword " + _code("HY") + " thay " + _code("Tạo lịch") + ". Bot:\n"
@@ -640,15 +645,48 @@ def _ext_delete_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 # ── Directory picker (Section 14) ─────────────────────────────────────────────
-def _create_preview_keyboard() -> InlineKeyboardMarkup:
-    """Keyboard cho preview tạo lịch — confirm + sổ thành viên."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
-            InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
-        ],
-        [InlineKeyboardButton("📇 Sổ thành viên", callback_data="dir_open:create")],
-    ])
+def _create_preview_keyboard(*, has_attendees: bool = False) -> InlineKeyboardMarkup:
+    """Keyboard cho preview tạo lịch — confirm + sổ + (optional) sửa danh sách."""
+    rows = [[
+        InlineKeyboardButton("✅ Xác nhận tạo", callback_data="cr_confirm"),
+        InlineKeyboardButton("❌ Huỷ", callback_data="cr_cancel"),
+    ]]
+    secondary = [
+        InlineKeyboardButton("📇 Thêm từ sổ", callback_data="dir_open:create"),
+    ]
+    if has_attendees:
+        # Phase 14 — review picker: hiện chỉ khi đã có khách để untick
+        secondary.append(InlineKeyboardButton(
+            "📋 Sửa danh sách", callback_data="rev_open:create"
+        ))
+    rows.append(secondary)
+    return InlineKeyboardMarkup(rows)
+
+
+def _review_picker_keyboard(attendees: list[str]) -> InlineKeyboardMarkup:
+    """Phase 14 — keyboard review/untick picker.
+
+    Layout: [1] [2] [3] [4]... per row of 4
+            [🗑 Bỏ tất cả] [↩️ Quay lại preview]
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if attendees:
+        nums = [
+            InlineKeyboardButton(str(i + 1), callback_data=f"rev_rm:{i}")
+            for i in range(len(attendees))
+        ]
+        for i in range(0, len(nums), 4):
+            rows.append(nums[i:i + 4])
+    bottom = []
+    if attendees:
+        bottom.append(InlineKeyboardButton(
+            "🗑 Bỏ tất cả", callback_data="rev_clear"
+        ))
+    bottom.append(InlineKeyboardButton(
+        "↩️ Quay lại preview", callback_data="rev_back"
+    ))
+    rows.append(bottom)
+    return InlineKeyboardMarkup(rows)
 
 
 def _att_add_prompt_keyboard(*, kind: str, event_id: int | None = None) -> InlineKeyboardMarkup:
@@ -843,7 +881,7 @@ async def _exit_dir_mode_back_to_create(
     )
     await query.edit_message_text(
         preview,
-        reply_markup=_create_preview_keyboard(),
+        reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -1129,7 +1167,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(
         preview,
-        reply_markup=_create_preview_keyboard(),
+        reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -1250,7 +1288,7 @@ async def _preview_clone(
         f"({source.topic}) — bản mới sẽ là:\n\n"
     )
     preview = header + formatter.format_confirm_preview(cmd) + formatter.format_conflict_warning(conflicts)
-    keyboard = _create_preview_keyboard()
+    keyboard = _create_preview_keyboard(has_attendees=bool(cmd.attendees))
     if hasattr(reply_target, "edit_message_text"):
         await reply_target.edit_message_text(
             preview, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN
@@ -1916,6 +1954,75 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             else:
                 ctx.chat_data.pop("dir_mode", None)
                 await query.edit_message_text("❌ Đã đóng sổ.")
+            return
+
+        # ── Review picker (Phase 14) — untick khách trực tiếp trong preview ──
+        if data.startswith("rev_open:"):
+            kind = data.split(":", 1)[1]
+            if kind != "create":
+                await query.edit_message_text("⚠️ Review picker chỉ hỗ trợ flow tạo lịch hiện tại.")
+                return
+            cmd = ctx.chat_data.get("pending")
+            if cmd is None:
+                await query.edit_message_text("⚠️ Phiên tạo lịch đã hết hạn.")
+                return
+            await query.edit_message_text(
+                formatter.format_review_panel(attendees=list(cmd.attendees or [])),
+                reply_markup=_review_picker_keyboard(list(cmd.attendees or [])),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data.startswith("rev_rm:"):
+            try:
+                idx = int(data.split(":", 1)[1])
+            except ValueError:
+                return
+            cmd = ctx.chat_data.get("pending")
+            if cmd is None:
+                await query.edit_message_text("⚠️ Phiên tạo lịch đã hết hạn.")
+                return
+            attendees = list(cmd.attendees or [])
+            if 0 <= idx < len(attendees):
+                attendees.pop(idx)
+                cmd.attendees = attendees
+                ctx.chat_data["pending"] = cmd
+            await query.edit_message_text(
+                formatter.format_review_panel(attendees=attendees),
+                reply_markup=_review_picker_keyboard(attendees),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data == "rev_clear":
+            cmd = ctx.chat_data.get("pending")
+            if cmd is None:
+                await query.edit_message_text("⚠️ Phiên tạo lịch đã hết hạn.")
+                return
+            cmd.attendees = []
+            ctx.chat_data["pending"] = cmd
+            await query.edit_message_text(
+                formatter.format_review_panel(attendees=[]),
+                reply_markup=_review_picker_keyboard([]),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if data == "rev_back":
+            cmd = ctx.chat_data.get("pending")
+            if cmd is None:
+                await query.edit_message_text("⚠️ Phiên tạo lịch đã hết hạn.")
+                return
+            conflicts = _collect_conflicts_for(cmd)
+            preview = (
+                formatter.format_confirm_preview(cmd)
+                + formatter.format_conflict_warning(conflicts)
+            )
+            await query.edit_message_text(
+                preview,
+                reply_markup=_create_preview_keyboard(has_attendees=bool(cmd.attendees)),
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
 
         if data == "back_list":

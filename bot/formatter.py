@@ -471,6 +471,35 @@ def format_external_edit_preview(occ: dict, field: str, new_display: str) -> str
     )
 
 
+def format_review_panel(*, attendees: list[str]) -> str:
+    """Phase 14 — review picker hiện danh sách khách hiện tại của lịch.
+
+    Mỗi khách 1 dòng, kèm tag (sổ / ngoài sổ). Bấm số để bỏ.
+    """
+    from bot import directory  # avoid circular at import time
+    if not attendees:
+        return (
+            "📋 *Danh sách khách hiện tại*\n\n"
+            "_📭 Chưa có khách nào. Quay lại preview rồi bấm 📇 Thêm từ sổ "
+            "hoặc gõ thêm email vào prompt._"
+        )
+    members_by_email = {m.email: m for m in directory.list_members()}
+    lines = [
+        f"📋 *Danh sách khách hiện tại* ({len(attendees)} người) — bấm số để BỎ:",
+        "",
+    ]
+    for i, email in enumerate(attendees, 1):
+        m = members_by_email.get(email.lower())
+        if m:
+            label = f"*{m.name}*" + (f" · {m.title}" if m.title else "")
+            lines.append(f"{i}. {label} · `{email}`")
+        else:
+            lines.append(f"{i}. _ngoài sổ_ · `{email}`")
+    lines.append("")
+    lines.append("_Bấm `🗑 Bỏ tất cả` để clear, `↩️ Quay lại` để giữ nguyên._")
+    return "\n".join(lines)
+
+
 def format_directory_panel(
     *,
     members_on_page: list,

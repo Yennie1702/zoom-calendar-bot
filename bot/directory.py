@@ -348,11 +348,28 @@ def resolve_token(token: str) -> ResolutionResult:
     )
 
 
+# Phase 13.1 — shortcut `/all` (và alias) expand thành tất cả members trong sổ.
+# Cho phép chị gõ `Khách: /all, abc@external.com` → mời cả team + 1 khách ngoài.
+_ALL_TOKENS = {
+    "/all", "all", "@all",
+    "/all member", "/all members", "all member", "all members",
+    "tất cả", "tat ca", "tất cả thành viên", "tat ca thanh vien",
+    "toàn bộ", "toan bo",
+}
+
+
+def _is_all_shortcut(token: str) -> bool:
+    """True nếu token là 1 trong các cách viết của shortcut `/all`."""
+    return token.strip().lower() in _ALL_TOKENS
+
+
 def resolve_attendees_line(line: str) -> tuple[list[str], list[ResolutionResult]]:
     """Phân tích cả dòng "Khách: a, b, c" — split theo dấu phẩy / xuống dòng.
 
     Trả (resolved_emails_dedupe, problems).
     `problems` chứa các ResolutionResult có error (không match / ambiguous).
+
+    Hỗ trợ shortcut `/all` (Phase 13.1) → expand thành toàn bộ sổ thành viên.
     """
     if not line:
         return [], []
@@ -363,6 +380,13 @@ def resolve_attendees_line(line: str) -> tuple[list[str], list[ResolutionResult]
     seen: set[str] = set()
     for tok in raw_tokens:
         if not tok.strip():
+            continue
+        # Phase 13.1 — /all: expand toàn bộ sổ
+        if _is_all_shortcut(tok):
+            for m in list_members():
+                if m.email not in seen:
+                    emails.append(m.email)
+                    seen.add(m.email)
             continue
         result = resolve_token(tok)
         if result.email:

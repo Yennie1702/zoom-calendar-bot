@@ -1014,9 +1014,115 @@ User vẫn confirm được — bot tạo lịch với danh sách đã resolve �
 - **Telegram không thể inline-autocomplete** → workflow tốt nhất em làm được là "gõ rồi resolve", chấp nhận đôi lúc cần edit lại nếu typo. Picker 📇 trong preview (Phase 11) vẫn là fallback nhanh.
 - **Ambiguity** chưa interactive (không cho user bấm chọn 1 trong N member match) — Phase 13.2 nếu cần. Hiện chấp nhận chị tự gõ tên đầy đủ hơn (VD "Chị Linh" thay vì "Linh") để không ambiguous.
 
+### 16.7 Shortcut `/all` (Phase 13.1)
+
+Mời cả team trong 1 token. Bot expand thành toàn bộ members trong sổ.
+
+**Token nhận:** `/all`, `all`, `@all`, `/all member`, `/all members`, `tất cả`, `tat ca`, `tất cả thành viên`, `toàn bộ`, `toan bo` (case-insensitive).
+
+**Mix tự do:**
+```
+- Khách: /all, abc@external.com
+```
+→ 10 members trong sổ + abc@external.com = 11 khách.
+
+```
+- Khách: Toàn, /all, abc@x.vn
+```
+→ /all expand cả 10 (Toàn đã có trong sổ, dedupe) + abc@x.vn = 11 khách.
+
+**Implementation:** trong `directory.resolve_attendees_line`, detect token là `_is_all_shortcut(tok)` thì expand bằng `list_members()`, dedupe theo `seen` set.
+
 ---
 
-## 17. Phase history (cập nhật)
+## 17. Review picker — sửa danh sách khách trong preview (Phase 14)
+
+**Vấn đề:** sau khi resolve `/all` → 10-11 khách. Chị muốn untick 1-2 người vắng mà không mở picker thêm. UX hiện tại bắt chị phải bấm 📇 (add picker), chỉ cho ADD chứ không REMOVE.
+
+**Giải pháp:** thêm 1 picker thứ 2 — **review picker** — chỉ làm REMOVE.
+
+### 17.1 Trigger
+
+Preview tạo lịch giờ có 4 nút (khi attendees non-empty):
+```
+[✅ Xác nhận tạo] [❌ Huỷ]
+[📇 Thêm từ sổ]   [📋 Sửa danh sách]
+```
+
+`📋 Sửa danh sách` chỉ hiện khi `cmd.attendees` có ít nhất 1 người (không có khách thì không có gì để sửa).
+
+### 17.2 Panel UI
+
+```
+📋 *Danh sách khách hiện tại* (11 người) — bấm số để BỎ:
+
+1. *MXD* · maixuandat@okrs.vn
+2. *Thuỳ* · vukimthuy@john.vn
+…
+10. *Yến* · nguyenthihaiyen@john.vn
+11. _ngoài sổ_ · abc@external.com
+
+[1] [2] [3] [4]
+[5] [6] [7] [8]
+[9] [10] [11]
+[🗑 Bỏ tất cả]  [↩️ Quay lại preview]
+```
+
+- Mỗi khách hiển thị tên (nếu trong sổ) hoặc tag `_ngoài sổ_` (nếu là email tay không thuộc sổ).
+- Bấm số → bỏ người đó, panel tự re-render với list rút gọn.
+- `🗑 Bỏ tất cả` → clear sạch, panel hiện empty state với hint.
+- `↩️ Quay lại preview` → confirm danh sách hiện tại, quay về preview.
+
+### 17.3 State
+
+Không cần state riêng. Picker này thao tác trực tiếp trên `ctx.chat_data["pending"].attendees` (cmd object). Mỗi click = mutation + re-render.
+
+Khác với add picker (Phase 11) cần lưu `dir_mode["selected_emails"]` riêng, review picker đơn giản hơn vì:
+- Không có "preview state" — mọi thay đổi apply ngay.
+- Không cần "Cancel" semantic — `↩️ Quay lại` chỉ là navigation, không revert.
+
+### 17.4 Callbacks
+
+| Callback | Tác dụng |
+|---|---|
+| `rev_open:create` | Mở review panel từ create preview |
+| `rev_rm:<idx>` | Xoá khách ở index `idx` (theo thứ tự `cmd.attendees`) |
+| `rev_clear` | Xoá tất cả khách |
+| `rev_back` | Re-render preview với attendees hiện tại |
+
+### 17.5 Tích hợp cùng các flow khác
+
+Phase 14 hiện chỉ hỗ trợ create flow. Edit "Bỏ khách" (`ed_f:att_rm`) đã có flow riêng — gõ email cần bỏ. External edit cũng tương tự.
+
+Có thể mở rộng review picker cho edit flow (Phase 14.1) nếu chị thấy hữu ích, nhưng MVP này focus create vì đó là chỗ chị dùng `/all` nhiều nhất.
+
+### 17.6 Combined workflow ví dụ
+
+```
+1. Chị gõ:
+   Tạo lịch "Họp full team":
+   - Thời gian: 30/4/2026 14:00
+   - Thời lượng: 60 phút
+   - Nội dung: Sync hàng tuần
+   - Khách: /all, abc@external.com
+
+2. Bot resolve → preview hiện 11 khách. Keyboard:
+   [✅ Xác nhận tạo] [❌ Huỷ]
+   [📇 Thêm từ sổ] [📋 Sửa danh sách]
+
+3. Chị bấm 📋 Sửa danh sách → review panel 11 khách.
+
+4. MXD và Hà vắng → chị bấm số 1 (MXD) → còn 10. Bấm số 6 (Hà mới — index đã shift sau khi xoá MXD!) → còn 9.
+   ⚠️ Lưu ý: index re-number sau mỗi lần xoá. Chị nên xoá từ DƯỚI lên trên để index ổn định, hoặc nhìn tên kỹ trước khi bấm.
+
+5. Chị bấm ↩️ Quay lại preview → preview hiện 9 khách.
+
+6. Bấm ✅ Xác nhận tạo → bot tạo Zoom + Calendar + invite 9 người.
+```
+
+---
+
+## 18. Phase history (cập nhật)
 
 (Bảng ở Section 12 — lịch sử Phase 0-10. Bổ sung:)
 
@@ -1025,7 +1131,9 @@ User vẫn confirm được — bot tạo lịch với danh sách đã resolve �
 | 11 | 2026-04-27 | Sổ thành viên công ty (`data/members.json`, `/members`, picker integrate vào create + edit flows) |
 | 12 | 2026-04-27 | Turso backend cho members (persistent qua Render restart, JSON fallback local dev) + auto-seed từ JSON lần đầu |
 | 13 | 2026-04-27 | Resolve tên member trong dòng `Khách:` của prompt — gõ "Lan, Đạt, abc@external.com" thay vì email đầy đủ. Áp dụng cho create + edit "Thêm khách" / "Bỏ khách" |
+| 13.1 | 2026-04-27 | Shortcut `/all` (và alias `tất cả`, `toàn bộ`...) trong dòng Khách → expand thành toàn bộ sổ thành viên. Mix tự do với email khách ngoài. |
+| 14 | 2026-04-27 | Review picker — nút `📋 Sửa danh sách` trong preview, mở panel list toàn bộ khách hiện tại (in/out sổ), bấm số untick từng người. Combo với /all = "tick all rồi xoá bớt". |
 
 ---
 
-*Cập nhật cuối: 2026-04-27 — sau Phase 13 (Member name resolution in prompts).*
+*Cập nhật cuối: 2026-04-27 — sau Phase 14 (Review picker for attendees).*
