@@ -294,15 +294,43 @@ _HELP_TEXT_PART2 = (
 
     # ─── Members directory
     "📇 <b>11. SỔ THÀNH VIÊN CÔNG TY</b>\n"
-    "Lưu sẵn email cộng sự / đối tác → khi tạo lịch bấm chọn nhanh.\n"
+    "Lưu sẵn email team → khi tạo lịch bấm chọn nhanh thay vì gõ email dài.\n\n"
+
+    "<b>11A. Quản lý sổ</b>\n"
     + _pre(
-        "/members                            ← liệt kê sổ\n"
-        "/members add lan@abc.com Chị Lan    ← thêm\n"
-        "/members add a@x.vn Tên · Chức danh ← thêm kèm chức danh\n"
-        "/members rm lan@abc.com             ← xoá"
+        "/members                              ← liệt kê sổ\n"
+        "/members add lan@abc.com Chị Lan      ← thêm\n"
+        "/members add a@x.vn Tên · Chức danh   ← thêm kèm chức danh\n"
+        "/members rm lan@abc.com               ← xoá"
     ) + "\n"
-    "Trong preview tạo lịch / khi ➕ Thêm khách: bấm <b>📇 Sổ thành viên</b> → "
-    "tick chọn → <b>✅ Xong</b>. Vẫn gõ email tay được như cũ.\n\n"
+
+    "<b>11B. Trong dòng <code>- Khách:</code> của prompt tạo lịch</b>\n"
+    "Có thể dùng tên thay email + shortcut <code>/all</code>:\n"
+    + _pre(
+        "Khách: Toàn, Hương, Oanh           ← gõ tên trong sổ\n"
+        "Khách: /all                        ← cả team (10 người)\n"
+        "Khách: /all, abc@external.com      ← cả team + 1 khách ngoài\n"
+        "Khách: Toàn, /all, abc@x.vn        ← mix tự do (dedupe)"
+    ) + "\n"
+    "<i>Alias /all: <code>tất cả</code>, <code>toàn bộ</code>, <code>@all</code>.</i>\n\n"
+
+    "<b>11C. 2 picker trong preview</b>\n"
+    "• <b>📇 Thêm từ sổ</b> — mở list members, bấm số TICK thêm. Có "
+    "<b>📋 Chọn tất cả</b> / <b>🔄 Bỏ chọn</b> hỗ trợ chọn nhanh.\n"
+    "• <b>📋 Sửa danh sách</b> — list TOÀN BỘ khách hiện tại (in/out sổ), "
+    "bấm số UNTICK từng người. Có <b>🗑 Bỏ tất cả</b>.\n"
+    "<i>Bot tự ẩn nút khi không có tác dụng (sổ đã full → ẩn 📇; chưa có khách → ẩn 📋).</i>\n\n"
+
+    "<b>11D. Workflow gợi ý — mời cả team rồi xoá bớt</b>\n"
+    + _pre(
+        'Tạo lịch "Họp tuần":\n'
+        "- Thời gian: 30/4/2026 14:00\n"
+        "- Thời lượng: 60 phút\n"
+        "- Nội dung: Sync\n"
+        "- Khách: /all"
+    ) + "\n"
+    "→ Preview 10 khách → 📋 Sửa danh sách → bấm số người vắng → ↩️ Quay lại "
+    "→ ✅ Xác nhận tạo.\n\n"
 
     "⚠️ <b>LƯU Ý</b>\n"
     "• Chỉ chị Hải Yến (chat_id whitelist) nhắn được.\n"

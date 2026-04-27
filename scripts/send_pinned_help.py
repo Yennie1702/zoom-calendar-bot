@@ -1,197 +1,100 @@
-"""One-off: send the pinnable help message to chị Yến's chat.
+"""Gửi + tự pin lại 2 tin nhắn hướng dẫn (Part 1/2 + Part 2/2).
 
-Vì nội dung > 4096 chars (Telegram limit) nên chia thành 2 tin nhắn (Part 1/2 + Part 2/2).
-Chị pin cả 2 tin nhắn để có hướng dẫn đầy đủ.
+Nội dung lấy thẳng từ `bot.handlers._HELP_TEXT_PART1/PART2` để **luôn nhất quán
+với `/help`** — không phải maintain 2 nguồn riêng. Mỗi lần thêm tính năng, chỉ
+cần update string trong handlers.py rồi re-run script này.
 
-Run: python scripts/send_pinned_help.py
+Flow:
+  1. Lấy `pinned_message` hiện tại để báo chị (info-only, không thao tác).
+  2. `unpinAllChatMessages` — bỏ pin tin cũ (Telegram bot cần quyền pin; ở
+     private chat 1-1 bot luôn có quyền).
+  3. `sendMessage` Part 1/2 → lưu message_id.
+  4. `sendMessage` Part 2/2 (disable_notification=True để không kêu noti tiếp).
+  5. `pinChatMessage` cho cả 2 tin mới.
+
+Run: venv/bin/python scripts/send_pinned_help.py
 """
 from __future__ import annotations
 
-import html
 import sys
+from pathlib import Path
+
 import requests
 
-sys.path.insert(0, ".")
-from bot import config  # noqa: E402
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from bot import config, handlers  # noqa: E402
+
+# Sync nguồn duy nhất với /help command — tránh drift giữa pinned & /help
+HELP_PART1 = handlers._HELP_TEXT_PART1
+HELP_PART2 = handlers._HELP_TEXT_PART2
+
+API = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+CHAT_ID = config.TELEGRAM_ALLOWED_CHAT_ID
 
 
-def _cb(code: str) -> str:
-    """Wrap a multi-line code block, escaping HTML special chars."""
-    return f"<pre>{html.escape(code)}</pre>"
-
-
-def _c(s: str) -> str:
-    """Inline code."""
-    return f"<code>{html.escape(s)}</code>"
-
-
-HELP_PART1 = f"""📖 <b>JA Scheduler Bot — Hướng dẫn (1/2)</b>
-<i>Bot ghép Zoom + Google Calendar, chạy 24/7 trên Render.</i>
-
-📌 <b>1. LỆNH NHANH</b>
-• {_c('/start')}, {_c('/help')} — hướng dẫn
-• {_c('/list')} — quản lý lịch (xem · sửa · xoá · tìm · lọc)
-• {_c('/today')} — lịch hôm nay (digest on-demand)
-• {_c('/sync [id]')} — đồng bộ sau khi kéo thả trên Calendar
-
-🆕 <b>2. TẠO LỊCH</b>
-
-<b>2A. Lịch công việc (Zoom + Calendar, mời khách)</b>
-<i>One-time:</i>
-{_cb('''Tạo lịch "Tư vấn OKRs - Chị Lan":
-- Thời gian: 22/4/2026 14:00
-- Thời lượng: 30 phút
-- Nội dung: Tư vấn gói Coaching OKRs
-- Khách: lan@abc.com''')}
-<i>Recurring (hàng tuần):</i>
-{_cb('''Tạo lịch "Mentor MBOs 42":
-- Thời gian: 8h30 sáng thứ 4 hàng tuần trong 12 tuần liên tiếp bắt đầu từ 20/5/2026
-- Thời lượng: 120 phút
-- Nội dung: Chương trình Mentor MBOs
-- Mời khách: a@x.vn, b@y.vn''')}
-→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.
-
-<b>2B. Lịch HY — cá nhân</b> 🔒 <i>(chỉ mình chị, Meet thay Zoom, private)</i>
-Keyword {_c('HY')} thay {_c('Tạo lịch')}. Bot:
-• Auto-sinh link <b>Google Meet</b>, KHÔNG tạo Zoom
-• Set <b>visibility: private</b> → sếp/đồng nghiệp chỉ thấy busy-block, không xem được nội dung
-• Không ghi tên John Academy trong mô tả
-• Vẫn mời được khách tuỳ chọn, recurring hàng tuần OK
-<i>One-time (chỉ mình chị):</i>
-{_cb('''HY "Check-in sức khoẻ":
-- Thời gian: 25/4/2026 9:00
-- Thời lượng: 30 phút
-- Nội dung: Tự review tuần''')}
-<i>Recurring + mời khách riêng:</i>
-{_cb('''HY "Mentor 1-1 Linh":
-- Thời gian: 10h sáng thứ 6 hàng tuần trong 8 tuần liên tiếp bắt đầu từ 1/5/2026
-- Thời lượng: 60 phút
-- Nội dung: Coaching cá nhân
-- Khách: linh@abc.com''')}
-→ Trong /list hiện dấu 🔒 cạnh tên lịch HY.
-
-<b>2C. Clone lịch cũ</b> (copy rồi chỉnh, nhanh hơn gõ lại)
-{_cb('''tạo lịch giống #5
-tạo lịch giống #5 nhưng ngày 27/4 15h
-tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách a@x.vn
-tạo lịch giống #3 nhưng tên "OKRs v2", thêm khách b@y.vn''')}
-
-📋 <b>3. QUẢN LÝ LỊCH — /list</b>
-
-<b>3A. Mặc định</b> — {_c('/list')} hiện 10 lịch gần nhất:
-• Mỗi lịch 1 nút số (1-10) → bấm → detail
-• Detail có nút <b>✏️ Sửa</b> / <b>🗑 Xoá</b>
-• Menu ✏️: 6 field — giờ/ngày · thời lượng · thêm khách · bỏ khách · tên · nội dung
-• 🔒 cạnh tên = lịch HY cá nhân
-
-<b>3B. Tìm &amp; lọc &amp; phân trang</b>
-{_cb('''/list 2                   ← trang 2 (10 lịch/trang)
-/list OKRs                ← lọc từ khoá trong tên/nội dung
-/list khách lan@abc.com   ← lọc theo email khách
-/list tuần này
-/list tuần sau | tuần trước
-/list hôm nay | mai | hôm qua
-/list tháng này | tháng 5 | tháng 5/2026
-/list 27/4                ← ngày cụ thể
-/list 27/4-4/5            ← khoảng ngày
-/list OKRs 2              ← từ khoá + trang''')}
-
-<b>3C. Lịch Calendar không do bot tạo</b> 📅
-Khi /list có lọc theo ngày, bot thêm section "📅 N lịch từ Calendar" với nút <code>E1</code>/<code>E2</code>…
-• Bấm <code>E#</code> → detail + ✏️ Sửa / 🗑 Xoá luôn qua bot (không cần mở Calendar)
-• Menu ✏️ 6 field giống lịch bot tạo
-• Notify-email toggle hoạt động bình thường
-
-<i>⬇️ Xem tiếp Part 2/2 (Sửa nhanh · Lịch lặp · Email · Nhắc · Sync · Icons).</i>"""
-
-
-HELP_PART2 = f"""📖 <b>JA Scheduler Bot — Hướng dẫn (2/2)</b>
-
-⚡ <b>4. SỬA NHANH TỪ CHAT</b> (không cần /list)
-
-<b>4A. Sửa lịch mới nhất</b> — nhắn thẳng:
-{_cb('''sửa giờ 15h30
-sửa giờ 15h30 25/4/2026
-sửa thời lượng 45 phút
-sửa tên Tư vấn OKRs v2
-sửa nội dung Nội dung mới
-thêm khách a@x.vn, b@y.vn
-bỏ khách a@x.vn
-xoá lịch''')}
-
-<b>4B. Sửa lịch khác — bằng #id</b> (lấy id từ /list):
-{_cb('''sửa giờ 15h #5
-thêm khách a@x.vn #5
-xoá lịch #5''')}
-
-<b>4C. Sửa lịch cũ bằng TÊN</b> (không cần nhớ id):
-{_cb('''sửa giờ 15h30 "Tư vấn OKRs" ngày 25/4
-xoá lịch "Tư vấn OKRs" ngày 25/4
-xoá lịch khách lan@abc.com
-sửa thời lượng 45 phút "Mentor MBOs"''')}
-→ Nhiều lịch khớp → bot hiện list để chị bấm số chọn.
-
-🔁 <b>5. LỊCH LẶP — SỬA/XOÁ 1 BUỔI RIÊNG</b>
-• <b>Sửa 1 buổi:</b> /list → lịch lặp → ✏️ → "📝 Sửa 1 buổi riêng" → chọn buổi → Giờ / Thời lượng
-• <b>Xoá 1 buổi:</b> /list → lịch lặp → 🗑 → "⦿ Chỉ 1 buổi" → chọn buổi
-• <b>Xoá cả series:</b> /list → lịch lặp → 🗑 → "🗑 Toàn bộ series"
-
-📧 <b>6. GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>
-Mỗi lần confirm sửa / xoá, bot hiện 2 nút:
-• <b>✅ … + gửi mail</b> — Google Calendar gửi email update/huỷ cho khách
-• <b>✅ … (không mail)</b> — update/huỷ âm thầm, khách không nhận email
-Áp dụng cho: sửa/xoá toàn bộ lịch · sửa/xoá 1 buổi riêng · xoá series · sửa lịch Calendar không do bot tạo.
-
-⏰ <b>7. NHẮC LỊCH &amp; DIGEST TỰ ĐỘNG</b>
-• <b>~30 phút trước mỗi buổi</b> bot gửi nhắc vào chat này (cả lịch bot tạo + lịch Calendar).
-• Lịch HY: reminder hiện 🔗 Google Meet thay vì Zoom.
-• <b>07:00 sáng</b>: digest toàn bộ lịch trong ngày (sort theo giờ, icon 🎯/🔁/📅/🔒).
-• {_c('/today')} — xem digest hôm nay bất kỳ lúc nào.
-
-⚠️ <b>8. CẢNH BÁO TRÙNG LỊCH</b>
-Khi tạo / clone / đổi giờ, nếu overlap với lịch khác (kể cả lịch lặp), bot cảnh báo ngay trong preview. Chị vẫn confirm được nếu cố ý trùng.
-
-🔄 <b>9. ĐỒNG BỘ SAU KHI KÉO THẢ TRÊN GOOGLE CALENDAR</b>
-Chị kéo thoải mái trên Calendar UI. Sau đó báo bot đồng bộ:
-• {_c('/sync')} → đồng bộ lịch mới nhất
-• {_c('/sync 5')} → đồng bộ lịch id=5
-• Hoặc /list → bấm vào lịch: nếu có drift sẽ có banner ⚠️ + nút <b>🔄 Sync</b>
-→ Bot coi Calendar là <b>nguồn đúng</b>, update Zoom + DB theo.
-<i>Lịch HY (Meet) chỉ sync với Calendar, không đụng Zoom.</i>
-
-🎨 <b>10. ICON TRONG /list &amp; DIGEST</b>
-• 🎯 lịch bot tạo · 🔁 lịch bot tạo + recurring
-• 🔒 lịch HY cá nhân (Meet, private)
-• 📅 lịch từ Calendar (không do bot tạo)
-
-⚠️ <b>LƯU Ý</b>
-• Chỉ chị Hải Yến (chat_id whitelist) nhắn được.
-• Bot luôn preview trước khi ghi thật. Gõ {_c('huỷ')} để bỏ mọi trạng thái chờ.
-• /sync chỉ đồng bộ cấp series — kéo 1 instance riêng trên Calendar → dùng luồng "Sửa 1 buổi riêng" qua /list."""
-
-
-def _send(text: str, label: str) -> None:
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        json={
-            "chat_id": config.TELEGRAM_ALLOWED_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=20,
-    )
-    print(f"[{label}] status={r.status_code} len={len(text)}")
-    print(r.text[:300])
+def _api(method: str, **payload):
+    """POST tới Telegram Bot API. Raise nếu non-200 hoặc ok=False."""
+    r = requests.post(f"{API}/{method}", json=payload, timeout=20)
     r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"{method} failed: {data}")
+    return data["result"]
 
 
-def main() -> None:
-    _send(HELP_PART1, "Part 1/2")
-    _send(HELP_PART2, "Part 2/2")
-    print("✅ Đã gửi 2 tin nhắn. Chị vào Telegram → giữ từng tin → Pin cả 2.")
+def _send(text: str, label: str, *, silent: bool = False) -> int:
+    """Gửi tin, trả message_id."""
+    result = _api(
+        "sendMessage",
+        chat_id=CHAT_ID,
+        text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        disable_notification=silent,
+    )
+    msg_id = result["message_id"]
+    print(f"  [{label}] sent — message_id={msg_id}, len={len(text)}")
+    return msg_id
+
+
+def _pin(msg_id: int, *, silent: bool = False) -> None:
+    _api("pinChatMessage", chat_id=CHAT_ID, message_id=msg_id, disable_notification=silent)
+    print(f"  pinned message_id={msg_id}{' (silent)' if silent else ''}")
+
+
+def _unpin_all() -> None:
+    """Bỏ pin tất cả tin cũ. Im lặng nếu không có gì để unpin."""
+    _api("unpinAllChatMessages", chat_id=CHAT_ID)
+    print("  unpinned all old pinned messages")
+
+
+def main() -> int:
+    print(f"Chat ID: {CHAT_ID}")
+    print(f"Help part 1: {len(HELP_PART1)} chars")
+    print(f"Help part 2: {len(HELP_PART2)} chars")
+    if len(HELP_PART1) > 4096 or len(HELP_PART2) > 4096:
+        print("❌ Một part > 4096 chars — Telegram sẽ reject. Sửa lại trước.")
+        return 1
+
+    print("\n1. Bỏ pin tin cũ…")
+    try:
+        _unpin_all()
+    except Exception as e:
+        print(f"  ⚠️ unpin fail (continue anyway): {e}")
+
+    print("\n2. Gửi tin mới…")
+    id_part1 = _send(HELP_PART1, "Part 1/2")
+    id_part2 = _send(HELP_PART2, "Part 2/2", silent=True)
+
+    print("\n3. Pin lại 2 tin mới…")
+    _pin(id_part1)
+    _pin(id_part2, silent=True)
+
+    print("\n✅ Done. Chị check chat thấy 2 tin pin mới (đã unpin tin cũ).")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1106,19 +1106,48 @@ Có thể mở rộng review picker cho edit flow (Phase 14.1) nếu chị thấ
    - Nội dung: Sync hàng tuần
    - Khách: /all, abc@external.com
 
-2. Bot resolve → preview hiện 11 khách. Keyboard:
+2. Bot resolve → preview hiện 11 khách. Keyboard (sổ đã full
+   → nút 📇 Thêm từ sổ tự ẩn — xem 17.7):
    [✅ Xác nhận tạo] [❌ Huỷ]
-   [📇 Thêm từ sổ] [📋 Sửa danh sách]
+   [📋 Sửa danh sách]
 
 3. Chị bấm 📋 Sửa danh sách → review panel 11 khách.
 
 4. MXD và Hà vắng → chị bấm số 1 (MXD) → còn 10. Bấm số 6 (Hà mới — index đã shift sau khi xoá MXD!) → còn 9.
    ⚠️ Lưu ý: index re-number sau mỗi lần xoá. Chị nên xoá từ DƯỚI lên trên để index ổn định, hoặc nhìn tên kỹ trước khi bấm.
 
-5. Chị bấm ↩️ Quay lại preview → preview hiện 9 khách.
+5. Chị bấm ↩️ Quay lại preview → preview hiện 9 khách. Nút 📇 Thêm từ sổ
+   xuất hiện trở lại (sau khi xoá đã có member chưa thuộc danh sách).
 
 6. Bấm ✅ Xác nhận tạo → bot tạo Zoom + Calendar + invite 9 người.
 ```
+
+### 17.7 Logic ẩn nút thông minh (Phase 14.1)
+
+Sau khi có cả 2 picker, keyboard preview có thể trở nên thừa thãi nếu nút không có tác dụng. Em ẩn nút theo trạng thái thực tế của `cmd.attendees` ↔ sổ:
+
+| Tình huống | 📇 Thêm từ sổ | 📋 Sửa danh sách |
+|---|:---:|:---:|
+| 0 khách | ✅ hiện | ❌ ẩn (chưa có ai để sửa) |
+| 1 khách trở lên + còn member sổ chưa tick | ✅ hiện | ✅ hiện |
+| Tất cả members sổ đều thuộc danh sách (vd sau `/all`) | ❌ ẩn (không thêm được) | ✅ hiện |
+| Sổ rỗng (chưa có member nào) | ❌ ẩn | ✅ hiện nếu có khách |
+
+**Implementation** — helper `_preview_keyboard_for(cmd)` tự compute:
+
+```python
+def _preview_keyboard_for(cmd) -> InlineKeyboardMarkup:
+    attendees_lower = {e.lower() for e in (cmd.attendees or [])}
+    has_unpicked = any(
+        m.email not in attendees_lower for m in directory.list_members()
+    )
+    return _create_preview_keyboard(
+        has_attendees=bool(cmd.attendees),
+        has_unpicked_in_directory=has_unpicked,
+    )
+```
+
+Áp dụng tại 4 call sites: `handle_text` (parse mới), `_preview_clone` (clone), `_exit_dir_mode_back_to_create` (đóng add picker), `rev_back` (đóng review picker). Mỗi lần preview re-render → keyboard tự cập nhật theo trạng thái mới.
 
 ---
 
@@ -1133,7 +1162,8 @@ Có thể mở rộng review picker cho edit flow (Phase 14.1) nếu chị thấ
 | 13 | 2026-04-27 | Resolve tên member trong dòng `Khách:` của prompt — gõ "Lan, Đạt, abc@external.com" thay vì email đầy đủ. Áp dụng cho create + edit "Thêm khách" / "Bỏ khách" |
 | 13.1 | 2026-04-27 | Shortcut `/all` (và alias `tất cả`, `toàn bộ`...) trong dòng Khách → expand thành toàn bộ sổ thành viên. Mix tự do với email khách ngoài. |
 | 14 | 2026-04-27 | Review picker — nút `📋 Sửa danh sách` trong preview, mở panel list toàn bộ khách hiện tại (in/out sổ), bấm số untick từng người. Combo với /all = "tick all rồi xoá bớt". |
+| 14.1 | 2026-04-27 | UX cleanup — ẩn `📇 Thêm từ sổ` khi tất cả members sổ đã thuộc danh sách (vd sau /all), ẩn `📋 Sửa danh sách` khi chưa có khách. Helper `_preview_keyboard_for(cmd)` đảm bảo nhất quán ở 4 call sites. |
 
 ---
 
-*Cập nhật cuối: 2026-04-27 — sau Phase 14 (Review picker for attendees).*
+*Cập nhật cuối: 2026-04-27 — sau Phase 14.1 (Smart button visibility).*
