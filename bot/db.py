@@ -616,10 +616,14 @@ def mark_reminded(event_id: int, occurrence_iso: str) -> None:
     update_event_fields(event_id, reminders_sent=new_list)
 
 
-def events_on_date(iso_date: str) -> list[dict]:
+def events_on_date(
+    iso_date: str, *, chat_mode: str | None = None,
+) -> list[dict]:
     """All occurrences (active only) whose start date == iso_date.
 
     Returns list of {row: EventRow, occurrence_iso: str}, sorted by start time.
+
+    Phase 3: optional `chat_mode` filter. NULL fallback cho rows cũ chưa backfill.
     """
     with _conn() as c:
         raw = c.execute("SELECT * FROM events WHERE status = 'active'").fetchall()
@@ -627,6 +631,10 @@ def events_on_date(iso_date: str) -> list[dict]:
     hits: list[dict] = []
     for r in raw:
         ev = _row_to_event(r)
+        if chat_mode is not None:
+            row_mode = ev.chat_mode or "personal"
+            if row_mode != chat_mode:
+                continue
         for occ_start in _expand_event_starts(ev):
             if occ_start.date().isoformat() == iso_date:
                 hits.append({

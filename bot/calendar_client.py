@@ -59,6 +59,7 @@ class CalendarClient:
         with_meet: bool = False,
         visibility: str | None = None,  # "default" / "public" / "private"
         notify: bool = True,
+        color_id: str | None = None,    # Phase 3: Google Calendar event color (1-11)
     ) -> CalendarEvent:
         cal = calendar_id or config.GOOGLE_CALENDAR_ACCOUNT or "primary"
 
@@ -76,6 +77,8 @@ class CalendarClient:
                 ],
             },
         }
+        if color_id:
+            body["colorId"] = color_id
         if with_meet:
             import uuid as _uuid
             body["conferenceData"] = {

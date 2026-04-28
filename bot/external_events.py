@@ -167,12 +167,16 @@ def fetch_in_date_range(
     date_to: date,
     *,
     exclude_db: bool = True,
+    calendar_id: str | None = None,
 ) -> list[ExternalOccurrence]:
     """Return external occurrences whose start falls in [date_from, date_to].
 
     `exclude_db=True` (default): drop anything whose series id (or instance id
     for non-recurring) matches a bot-created lịch in DB — those are already
     rendered with Zoom links + inline buttons elsewhere.
+
+    Phase 3: optional `calendar_id` để fetch từ Calendar khác primary
+    (vd Calendar group team). Default None → primary.
     """
     try:
         client = CalendarClient()
@@ -185,6 +189,7 @@ def fetch_in_date_range(
         raw_items = client.list_events_in_range(
             time_min_iso=time_min,
             time_max_iso=time_max,
+            calendar_id=calendar_id,
         )
     except Exception:
         log.exception("Calendar list_events_in_range failed")
@@ -211,18 +216,22 @@ def fetch_in_date_range(
     return out
 
 
-def fetch_on_date(target_date: date) -> list[ExternalOccurrence]:
-    return fetch_in_date_range(target_date, target_date)
+def fetch_on_date(
+    target_date: date, *, calendar_id: str | None = None,
+) -> list[ExternalOccurrence]:
+    return fetch_in_date_range(target_date, target_date, calendar_id=calendar_id)
 
 
 def fetch_in_datetime_window(
-    window_from: datetime, window_to: datetime
+    window_from: datetime, window_to: datetime,
+    *, calendar_id: str | None = None,
 ) -> list[ExternalOccurrence]:
     """Narrower filter for the 30-min reminder: only occurrences actually
     starting inside [window_from, window_to] (naive local datetimes)."""
     all_in_day = fetch_in_date_range(
         window_from.date(),
         window_to.date(),
+        calendar_id=calendar_id,
     )
     return [
         occ for occ in all_in_day

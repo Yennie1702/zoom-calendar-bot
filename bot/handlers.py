@@ -24,6 +24,14 @@ from telegram.ext import ContextTypes
 
 from bot import config, db, directory, external_events, formatter
 from bot.calendar_client import CalendarClient
+# Phase 3 — multi-user permission gate
+from bot.permissions import (
+    RequestContext,
+    audit,
+    can_modify_event,
+    resolve_context,
+)
+from bot.users_config import UserConfig, get_user, list_users as list_user_configs
 from bot.parser import (
     CloneOverrides,
     CloneSpec,
@@ -74,6 +82,11 @@ def _log_incoming(update: Update) -> None:
 
 
 def _is_allowed(update: Update) -> bool:
+    """Phase 1-2 gate — kept for backward compat. Single chat_id check.
+
+    Phase 3 dùng _gate() resolve theo chat_mode (personal/group). _is_allowed
+    không nhận biết group → DEPRECATED nhưng giữ tránh break code chưa migrate.
+    """
     _log_incoming(update)
     chat = update.effective_chat
     return chat is not None and chat.id == config.TELEGRAM_ALLOWED_CHAT_ID
@@ -94,6 +107,29 @@ async def _reject(update: Update) -> None:
         update.effective_user.username if update.effective_user else None,
         config.TELEGRAM_ALLOWED_CHAT_ID,
     )
+
+
+async def _gate(
+    update: Update, command: str, *, silent_reject: bool = False,
+) -> RequestContext | None:
+    """Phase 3 gate — resolve chat_mode + permission, audit log.
+
+    Trả None nếu reject (đã reply user + log audit). Trả ctx nếu pass.
+
+    `silent_reject=True` → KHÔNG reply (cho lệnh public như /whoami muốn
+    bypass reject text).
+    """
+    _log_incoming(update)
+    ctx = resolve_context(update)
+    if ctx.mode == "reject":
+        if not silent_reject and update.effective_message is not None:
+            try:
+                await update.effective_message.reply_text(ctx.reject_message)
+            except Exception:
+                log.exception("Failed to send reject message")
+        audit(ctx, command, result="reject", error_message=ctx.reject_message)
+        return None
+    return ctx
 
 
 # ── /start, /help ──────────────────────────────────────────────────────────────
@@ -351,48 +387,75 @@ async def _send_help(update: Update) -> None:
 
 
 async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update):
-        await _reject(update)
+    req = await _gate(update, "/start")
+    if req is None:
         return
+    audit(req, "/start")
     await _send_help(update)
 
 
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update):
-        await _reject(update)
+    req = await _gate(update, "/help")
+    if req is None:
         return
+    audit(req, "/help")
     await _send_help(update)
 
 
 async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """On-demand "today's agenda" — same content as the 07:00 daily digest."""
-    if not _is_allowed(update):
-        await _reject(update)
+    """On-demand "today's agenda" — Phase 3: filter theo chat_mode."""
+    req = await _gate(update, "/today")
+    if req is None:
         return
     from bot import external_events, scheduler  # lazy imports
     now = scheduler._now_vn()
     today = now.date().isoformat()
-    items = db.events_on_date(today)
-    externals = external_events.fetch_on_date(now.date())
+    items = db.events_on_date(today, chat_mode=req.mode)
+    # External Calendar đọc theo calendar_id của mode
+    externals = external_events.fetch_on_date(
+        now.date(), calendar_id=req.calendar_id or None,
+    )
     text = scheduler._format_digest(today, items, externals)
     await update.message.reply_text(
         text, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True,
     )
+    audit(req, "/today")
 
 
 async def cmd_whoami(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Public command — KHÔNG check whitelist. Pre-work cho Phase 3 multi-user.
+    """Public command — KHÔNG check whitelist. Cho phép TẤT CẢ ai gõ.
 
-    Trả về metadata Telegram của chính người gửi + chat hiện tại để chị Yến
-    lấy được user_id của thành viên team trước khi whitelist họ. An toàn:
-    chỉ echo identity của caller, KHÔNG leak data bot/DB/system.
+    Mục đích: pre-work onboarding member mới (lấy user_id để add vào USERS).
+    An toàn: chỉ echo identity của caller, KHÔNG leak data bot/DB/system.
+
+    Phase 3: log vào audit_log với display_name='UNAUTHORIZED_USER' nếu user_id
+    không có trong USERS config (Q6 chị xác nhận).
     """
-    _log_incoming(update)  # vẫn log để audit ai gọi /whoami
+    _log_incoming(update)
     user = update.effective_user
     chat = update.effective_chat
     msg = update.effective_message
     if user is None or chat is None or msg is None:
         return  # impossible cho text command nhưng defensive
+
+    # Phase 3 audit: dùng resolve_context để lấy mode + display, override
+    # display_name thành UNAUTHORIZED_USER nếu không có trong USERS
+    perm_ctx = resolve_context(update)
+    if get_user(user.id) is None:
+        audit_display = "UNAUTHORIZED_USER"
+        audit_result = "reject"  # đánh dấu probe attempt
+        audit_err = f"User {user.id} not in USERS config"
+    else:
+        audit_display = perm_ctx.display_name
+        audit_result = "success"
+        audit_err = ""
+    db.log_audit(
+        user_id=user.id, display_name=audit_display,
+        chat_mode=perm_ctx.mode if perm_ctx.mode != "reject" else "unknown",
+        command="/whoami",
+        params=f"chat_id={chat.id} chat_type={chat.type}",
+        result=audit_result, error_message=audit_err,
+    )
 
     # Tên Telegram (last_name + username có thể None)
     name_parts = [user.first_name or ""]
@@ -428,47 +491,133 @@ async def cmd_whoami(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── /list ──────────────────────────────────────────────────────────────────────
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show paginated / filtered list. Without args → legacy "10 lịch gần nhất"."""
-    if not _is_allowed(update):
-        await _reject(update)
+    """Show paginated / filtered list. Without args → legacy "10 lịch gần nhất".
+
+    Phase 3 permission:
+      - Personal: lịch personal của chị (như cũ)
+      - Group-Admin: tất cả lịch group
+      - Group-Member: REJECT — chỉ /mylist được phép
+    """
+    req = await _gate(update, "/list")
+    if req is None:
+        return
+    # Phase 3: group member không được /list (chỉ /mylist)
+    if req.mode == "group" and not req.is_admin:
+        msg = (
+            "❌ Bạn chỉ xem được /mylist (lịch của bạn). "
+            "Nếu cần xem tất cả, liên hệ Hải Yến (Admin)."
+        )
+        await update.message.reply_text(msg)
+        audit(req, "/list", result="reject", error_message="member-not-admin")
         return
 
     raw_args = " ".join(ctx.args or []).strip() if hasattr(ctx, "args") else ""
     if not raw_args:
         # Legacy path: no pagination header, preserves exact old UX
-        rows = db.list_recent(limit=10)
+        rows = db.list_recent(limit=10, chat_mode=req.mode)
         text = formatter.format_list(rows)
         markup = _list_keyboard(rows)
         ctx.chat_data.pop("list_query", None)
+        ctx.chat_data["request_mode"] = req.mode  # remember for callbacks
+        ctx.chat_data["request_user_id"] = req.user_id
         await update.message.reply_text(
             text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
         )
+        audit(req, "/list")
         return
 
     try:
         query = parse_list_args(raw_args)
     except ParseError as e:
         await update.message.reply_text(f"⚠️ {e}")
+        audit(req, "/list", params=raw_args, result="fail", error_message=str(e))
         return
 
-    await _render_list_query(update.message, ctx, query)
+    ctx.chat_data["request_mode"] = req.mode
+    ctx.chat_data["request_user_id"] = req.user_id
+    await _render_list_query(update.message, ctx, query, chat_mode=req.mode)
+    audit(req, "/list", params=raw_args)
+
+
+async def cmd_mylist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Phase 3 — lịch chính người gọi tạo, theo chat_mode.
+
+    Personal mode: lịch chị Yến trong chat 1-1 (filter chat_mode='personal').
+    Group mode: lịch chính user_id hiện tại tạo trong group (filter chat_mode='group',
+    created_by_user_id=req.user_id). Member dùng cái này để xem lịch của mình
+    khi /list bị admin-only.
+    """
+    req = await _gate(update, "/mylist")
+    if req is None:
+        return
+
+    raw_args = " ".join(ctx.args or []).strip() if hasattr(ctx, "args") else ""
+    if not raw_args:
+        rows = db.list_recent(
+            limit=10,
+            chat_mode=req.mode,
+            created_by_user_id=req.user_id,
+        )
+        text = formatter.format_list(rows)
+        markup = _list_keyboard(rows)
+        ctx.chat_data.pop("list_query", None)
+        ctx.chat_data["request_mode"] = req.mode
+        ctx.chat_data["request_user_id"] = req.user_id
+        ctx.chat_data["mylist_only"] = True
+        await update.message.reply_text(
+            text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN
+        )
+        audit(req, "/mylist")
+        return
+
+    try:
+        query = parse_list_args(raw_args)
+    except ParseError as e:
+        await update.message.reply_text(f"⚠️ {e}")
+        audit(req, "/mylist", params=raw_args, result="fail", error_message=str(e))
+        return
+
+    ctx.chat_data["request_mode"] = req.mode
+    ctx.chat_data["request_user_id"] = req.user_id
+    ctx.chat_data["mylist_only"] = True
+    await _render_list_query(
+        update.message, ctx, query,
+        chat_mode=req.mode, created_by_user_id=req.user_id,
+    )
+    audit(req, "/mylist", params=raw_args)
 
 
 async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
-                              query) -> None:
+                              query, *,
+                              chat_mode: str | None = None,
+                              created_by_user_id: int | None = None) -> None:
     """Shared renderer for /list + pagination callbacks. Works with Message or CallbackQuery.
 
     When a date range is specified, also folds in external Calendar events
     (lịch chị Yến tự tạo trên Google Calendar, không do bot tạo). External
     rows are display-only — numbered buttons remain on DB rows.
+
+    Phase 3: optional `chat_mode` + `created_by_user_id` filter.
     """
+    # Phase 3 — calendar_id resolve theo mode (default primary)
+    cal_id = None
+    if chat_mode == "group":
+        from bot.permissions import CALENDAR_TEAM_ID
+        cal_id = CALENDAR_TEAM_ID() or None
+    elif chat_mode == "personal":
+        from bot.permissions import CALENDAR_PERSONAL_ID
+        cal_id = CALENDAR_PERSONAL_ID()
+
     externals: list = []
-    if query.date_from and query.date_to:
+    # External chỉ hiển thị khi /list (không phải /mylist) vì /mylist filter owner
+    if (query.date_from and query.date_to
+            and created_by_user_id is None):
         try:
             from datetime import date as _date
             externals = external_events.fetch_in_date_range(
                 _date.fromisoformat(query.date_from),
                 _date.fromisoformat(query.date_to),
+                calendar_id=cal_id,
             )
         except Exception:
             log.exception("External fetch failed for /list")
@@ -479,6 +628,8 @@ async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
         attendee_contains=query.attendee,
         date_from=query.date_from,
         date_to=query.date_to,
+        chat_mode=chat_mode,
+        created_by_user_id=created_by_user_id,
     )
     total = db_total + len(externals)
     total_pages = max(1, (total + query.page_size - 1) // query.page_size)
@@ -491,6 +642,8 @@ async def _render_list_query(message_or_query, ctx: ContextTypes.DEFAULT_TYPE,
         date_to=query.date_to,
         limit=query.page_size,
         offset=query.offset,
+        chat_mode=chat_mode,
+        created_by_user_id=created_by_user_id,
     )
     externals_shown = externals if query.page == 1 else []
     text = formatter.format_list(
@@ -1076,11 +1229,28 @@ async def _exit_dir_mode_to_ext_add(
 
 # ── /members command ──────────────────────────────────────────────────────────
 async def cmd_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """`/members` — xem / thêm / xoá thành viên trong sổ."""
-    if not _is_allowed(update):
-        await _reject(update)
+    """`/members` — xem / thêm / xoá thành viên trong sổ.
+
+    Phase 3 permission:
+      - list (no args): ai cũng xem được (personal + admin + member)
+      - add/rm/edit: CHỈ admin (group-member bị reject với hint)
+    """
+    req = await _gate(update, "/members")
+    if req is None:
         return
     args = ctx.args or []
+    sub = (args[0].lower() if args else "")
+    is_modify = sub in ("add", "rm", "remove", "delete", "del", "xoá", "xoa")
+    if is_modify and not req.is_admin:
+        msg = (
+            "❌ Chỉ Admin (Hải Yến) được modify sổ. "
+            "Bạn xem sổ bằng `/members` (no args)."
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        audit(req, "/members", params=" ".join(args), result="reject",
+              error_message="member-not-admin")
+        return
+
     if not args:
         members = directory.list_members()
         if not members:
@@ -1104,7 +1274,6 @@ async def cmd_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    sub = args[0].lower()
     if sub == "add":
         if len(args) < 3:
             await update.message.reply_text(
@@ -1167,9 +1336,13 @@ async def cmd_members(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── Text handler: create-parse OR edit-value (depending on state) ─────────────
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update):
-        await _reject(update)
+    req = await _gate(update, "text")
+    if req is None:
         return
+    # Stash request context cho create flow + callbacks dùng
+    ctx.chat_data["request_mode"] = req.mode
+    ctx.chat_data["request_user_id"] = req.user_id
+    ctx.chat_data["request_display_name"] = req.display_name
     text = update.message.text or ""
     low = text.strip().lower()
 
@@ -1232,6 +1405,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # 5) Default: create flow — accept "tạo lịch" (work) or "HY" prefix (cá nhân)
+    # Phase 3: HY chỉ trong personal mode (chỉ chị Yến).
+    if is_personal_prefix(text) and req.mode != "personal":
+        await update.message.reply_text(
+            "❌ Lệnh `HY` (lịch cá nhân private) chỉ dùng trong chat 1-1 với bot. "
+            "Trong group hãy dùng `Tạo lịch` thường.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        audit(req, "HY", result="reject", error_message="HY trong group")
+        return
     low_txt = text.lower()
     is_hy = is_personal_prefix(text)
     if "tạo lịch" not in low_txt and "tao lich" not in low_txt and not is_hy:
@@ -1614,8 +1796,8 @@ def _apply_drift_sync(row: db.EventRow, diffs: dict) -> None:
 
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update):
-        await _reject(update)
+    req = await _gate(update, "/sync")
+    if req is None:
         return
     args = ctx.args or []
     target_id: int | None = None
@@ -1629,6 +1811,15 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "⚠️ Không tìm thấy lịch. Gõ `/sync <id>` hoặc /list.",
             parse_mode=ParseMode.MARKDOWN,
         )
+        audit(req, "/sync", params=str(target_id), result="fail",
+              error_message="row not found")
+        return
+    # Phase 3 — permission check
+    ok, reason = can_modify_event(req, row)
+    if not ok:
+        await update.message.reply_text(reason, parse_mode=ParseMode.MARKDOWN)
+        audit(req, "/sync", params=f"id={row.id}", result="reject",
+              error_message=reason)
         return
     await update.message.reply_text("⏳ Đang so sánh với Calendar…")
     try:
@@ -2122,10 +2313,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
         if data == "back_list":
             # Prefer restoring paged/filtered list if one is active, else legacy view
+            mode = ctx.chat_data.get("request_mode")
+            owner = ctx.chat_data.get("request_user_id") if ctx.chat_data.get("mylist_only") else None
             if ctx.chat_data.get("list_query"):
-                await _render_list_query(query, ctx, _query_from_chat_data(ctx))
+                await _render_list_query(
+                    query, ctx, _query_from_chat_data(ctx),
+                    chat_mode=mode, created_by_user_id=owner,
+                )
                 return
-            rows = db.list_recent(limit=10)
+            rows = db.list_recent(limit=10, chat_mode=mode, created_by_user_id=owner)
             await query.edit_message_text(
                 formatter.format_list(rows),
                 reply_markup=_list_keyboard(rows),
@@ -2140,7 +2336,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             page = int(data.split(":", 1)[1])
             q = _query_from_chat_data(ctx)
             q.page = max(1, page)
-            await _render_list_query(query, ctx, q)
+            mode = ctx.chat_data.get("request_mode")
+            owner = ctx.chat_data.get("request_user_id") if ctx.chat_data.get("mylist_only") else None
+            await _render_list_query(query, ctx, q, chat_mode=mode, created_by_user_id=owner)
             return
 
         if data.startswith("qd_sel:"):
@@ -2383,7 +2581,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             event_id = int(parts[1])
             notify = len(parts) < 3 or parts[2] == "n"
             ctx.chat_data.pop("pending_delete", None)
-            await _do_delete(query, event_id, notify=notify)
+            await _do_delete(query, event_id, notify=notify, update=update)
             return
 
         if data == "del_no":
@@ -2502,6 +2700,11 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if cmd is None:
         await query.edit_message_text("⚠️ Phiên confirm đã hết hạn. Gửi lại lệnh giúp em.")
         return
+    # Phase 3 — chat_mode + creator info từ ctx.chat_data (set bởi handle_text)
+    req_mode = ctx.chat_data.get("request_mode", "personal")
+    req_user_id = ctx.chat_data.get("request_user_id", 8173041182)
+    req_display = ctx.chat_data.get("request_display_name", "Hải Yến")
+    creator_cfg: UserConfig | None = get_user(req_user_id)
     try:
         if cmd.is_personal:
             await _do_create_personal(query, ctx, cmd)
@@ -2527,32 +2730,64 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         rrule = None
         if cmd.recurring:
             rrule = f"RRULE:FREQ=WEEKLY;BYDAY={cmd.recurring['byday']};COUNT={cmd.recurring['count']}"
-        description = formatter.format_calendar_description(
-            cmd=cmd,
-            zoom_join_url=zoom.join_url,
-            zoom_meeting_id=zoom.meeting_id,
-            zoom_passcode=zoom.passcode,
-        )
+
+        # Phase 3 — branch theo mode để chọn template + calendar_id + color
+        if req_mode == "group" and creator_cfg is not None:
+            from bot.permissions import CALENDAR_TEAM_ID
+            target_cal = CALENDAR_TEAM_ID() or None
+            target_color = creator_cfg.calendar_color
+            title_prefix = creator_cfg.title_prefix
+            # Group attendees = khách + creator email (Kịch bản B)
+            final_attendees = list(cmd.attendees)
+            if creator_cfg.email and creator_cfg.email not in final_attendees:
+                final_attendees.append(creator_cfg.email)
+            description = formatter.format_group_calendar_description(
+                cmd=cmd,
+                zoom_join_url=zoom.join_url,
+                zoom_meeting_id=zoom.meeting_id,
+                zoom_passcode=zoom.passcode,
+                creator_display_name=creator_cfg.display_name,
+                creator_team=creator_cfg.team,
+                creator_signature=creator_cfg.signature,
+            )
+        else:
+            target_cal = None  # primary
+            target_color = creator_cfg.calendar_color if creator_cfg else None
+            title_prefix = (creator_cfg.title_prefix if creator_cfg
+                            else "[John Academy] ")
+            final_attendees = list(cmd.attendees)
+            description = formatter.format_calendar_description(
+                cmd=cmd,
+                zoom_join_url=zoom.join_url,
+                zoom_meeting_id=zoom.meeting_id,
+                zoom_passcode=zoom.passcode,
+            )
+
         event = _get_calendar().create_event(
-            summary=f"[John Academy] {cmd.topic}",
+            summary=f"{title_prefix}{cmd.topic}",
             description=description,
             start_local_iso=start_iso,
             end_local_iso=end_local_iso,
-            attendee_emails=cmd.attendees,
+            attendee_emails=final_attendees,
             rrule=rrule,
+            calendar_id=target_cal,
+            color_id=target_color,
         )
         event_id = db.insert_event(
             topic=cmd.topic,
             start_local=start_iso,
             duration_min=cmd.duration_min,
             agenda=cmd.agenda,
-            attendees=cmd.attendees,
+            attendees=final_attendees,
             recurring=cmd.recurring,
             zoom_meeting_id=str(zoom.meeting_id),
             zoom_join_url=zoom.join_url,
             zoom_passcode=zoom.passcode,
             calendar_event_id=event.event_id,
             calendar_event_link=event.html_link,
+            created_by_user_id=req_user_id,
+            created_by_display_name=req_display,
+            chat_mode=req_mode,
         )
         ctx.chat_data["last_created_id"] = event_id
         reply = formatter.format_success_reply(
@@ -2578,7 +2813,13 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _do_create_personal(query, ctx, cmd) -> None:
-    """HY flow: Google Meet auto-link + visibility=private, no Zoom."""
+    """HY flow: Google Meet auto-link + visibility=private, no Zoom.
+
+    Phase 3: HY chỉ chạy trong personal mode (handle_text đã guard).
+    Attribution = chị Yến luôn.
+    """
+    req_user_id = ctx.chat_data.get("request_user_id", 8173041182)
+    req_display = ctx.chat_data.get("request_display_name", "Hải Yến")
     await query.edit_message_text("⏳ Đang tạo lịch HY cá nhân (Meet, private)…")
     start_iso = cmd.start.strftime("%Y-%m-%dT%H:%M:%S")
     end_local_iso = (cmd.start + timedelta(minutes=cmd.duration_min)).strftime(
@@ -2634,6 +2875,9 @@ async def _do_create_personal(query, ctx, cmd) -> None:
         calendar_event_link=event.html_link,
         provider="meet",
         meet_join_url=meet_link,
+        created_by_user_id=req_user_id,
+        created_by_display_name=req_display,
+        chat_mode="personal",
     )
     ctx.chat_data["last_created_id"] = event_id
     reply = formatter.format_personal_success_reply(
@@ -2662,6 +2906,16 @@ async def _do_edit(
     new_value = pending["new_value"]
 
     row = db.get_event(event_id)
+    # Phase 3 — permission check
+    perm_ctx = resolve_context(update)
+    if row is not None and row.status == "active":
+        ok, reason = can_modify_event(perm_ctx, row)
+        if not ok:
+            ctx.chat_data.pop("pending_edit", None)
+            await query.edit_message_text(reason, parse_mode=ParseMode.MARKDOWN)
+            audit(perm_ctx, "edit_event", params=f"id={event_id} field={field}",
+                  result="reject", error_message=reason)
+            return
     if row is None or row.status != "active":
         ctx.chat_data.pop("pending_edit", None)
         await query.edit_message_text("⚠️ Lịch này không còn.")
@@ -2780,11 +3034,21 @@ def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True)
 
 
 # ── Action: delete ─────────────────────────────────────────────────────────────
-async def _do_delete(query, event_id: int, *, notify: bool = True) -> None:
+async def _do_delete(query, event_id: int, *, notify: bool = True,
+                     update: Update | None = None) -> None:
     row = db.get_event(event_id)
     if row is None or row.status != "active":
         await query.edit_message_text("⚠️ Lịch này không còn.")
         return
+    # Phase 3 — permission check (skip nếu không có update để resolve ctx)
+    if update is not None:
+        perm_ctx = resolve_context(update)
+        ok, reason = can_modify_event(perm_ctx, row)
+        if not ok:
+            await query.edit_message_text(reason, parse_mode=ParseMode.MARKDOWN)
+            audit(perm_ctx, "delete_event", params=f"id={event_id}",
+                  result="reject", error_message=reason)
+            return
     is_personal = row.provider == "meet"
     mail_note = "Khách đã nhận email huỷ." if notify else "Không gửi email cho khách."
     step_label = "Calendar" if is_personal else "Zoom + Calendar"

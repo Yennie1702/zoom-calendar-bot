@@ -65,6 +65,55 @@ def format_calendar_description(
     )
 
 
+def format_group_calendar_description(
+    *,
+    cmd: ParsedCommand,
+    zoom_join_url: str,
+    zoom_meeting_id: int | str,
+    zoom_passcode: str,
+    creator_display_name: str,
+    creator_team: str,
+    creator_signature: str,
+) -> str:
+    """Phase 3 — template Calendar description cho Group mode.
+
+    Khác Personal:
+    - KHÔNG hardcode "John Academy" header (Hương/Thuỳ team khác)
+    - Người tạo + team rõ trong meta + signature
+    - Vẫn theo style chị Yến phê duyệt (header + body + Zoom info + closing)
+    """
+    if cmd.recurring:
+        weekday_vi = _WEEKDAY_BYDAY_TO_VI[cmd.recurring["byday"]]
+        end_date = cmd.start + timedelta(weeks=cmd.recurring["count"] - 1)
+        time_line = (
+            f"{_fmt_time_range(cmd.start, cmd.duration_min)}, "
+            f"{weekday_vi} hàng tuần ({cmd.recurring['count']} buổi: "
+            f"{cmd.start.day}/{cmd.start.month}/{cmd.start.year} → "
+            f"{end_date.day}/{end_date.month}/{end_date.year})"
+        )
+        duration_line = f"{cmd.duration_min} phút/buổi"
+    else:
+        time_line = f"{_fmt_time_range(cmd.start, cmd.duration_min)}, {_fmt_date(cmd.start)}"
+        duration_line = f"{cmd.duration_min} phút"
+
+    agenda = cmd.agenda or cmd.topic
+    return (
+        "Kính gửi anh/chị,\n\n"
+        f"{creator_display_name} ({creator_team}) xin xác nhận lịch:\n"
+        "─────────────────────────────\n"
+        f"📅 Thời gian: {time_line}\n"
+        f"⏱️ Thời lượng: {duration_line}\n"
+        f"🎯 Nội dung: {agenda}\n"
+        f"👤 Người tạo: {creator_display_name} - {creator_team}\n"
+        "─────────────────────────────\n\n"
+        f"🔗 LINK ZOOM: {zoom_join_url}\n"
+        f"🆔 Meeting ID: {zoom_meeting_id}\n"
+        f"🔑 Passcode: {zoom_passcode}\n\n"
+        "Anh chị tham gia zoom đúng giờ nhé.\n\n"
+        f"{creator_signature}"
+    )
+
+
 def format_personal_calendar_description(*, cmd: ParsedCommand, meet_link: str) -> str:
     """Calendar description cho lịch HY cá nhân (không ghi tên JA, không có Zoom)."""
     if cmd.recurring:

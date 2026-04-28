@@ -42,6 +42,7 @@ def _build_app() -> Application:
     app.add_handler(CommandHandler("start", handlers.cmd_start))
     app.add_handler(CommandHandler("help", handlers.cmd_help))
     app.add_handler(CommandHandler("list", handlers.cmd_list))
+    app.add_handler(CommandHandler("mylist", handlers.cmd_mylist))
     app.add_handler(CommandHandler("sync", handlers.cmd_sync))
     app.add_handler(CommandHandler("today", handlers.cmd_today))
     app.add_handler(CommandHandler("whoami", handlers.cmd_whoami))
