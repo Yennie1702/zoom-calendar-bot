@@ -2,7 +2,9 @@ name: Keep Render service warm
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # */5: ping mỗi 5 phút. GitHub Actions cron có thể trễ 5-15 phút trong
+    # giờ cao điểm — interval 5p giảm risk gap > 15p (Render Free sleep threshold).
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

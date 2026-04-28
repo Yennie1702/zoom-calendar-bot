@@ -1163,7 +1163,96 @@ def _preview_keyboard_for(cmd) -> InlineKeyboardMarkup:
 | 13.1 | 2026-04-27 | Shortcut `/all` (và alias `tất cả`, `toàn bộ`...) trong dòng Khách → expand thành toàn bộ sổ thành viên. Mix tự do với email khách ngoài. |
 | 14 | 2026-04-27 | Review picker — nút `📋 Sửa danh sách` trong preview, mở panel list toàn bộ khách hiện tại (in/out sổ), bấm số untick từng người. Combo với /all = "tick all rồi xoá bớt". |
 | 14.1 | 2026-04-27 | UX cleanup — ẩn `📇 Thêm từ sổ` khi tất cả members sổ đã thuộc danh sách (vd sau /all), ẩn `📋 Sửa danh sách` khi chưa có khách. Helper `_preview_keyboard_for(cmd)` đảm bảo nhất quán ở 4 call sites. |
+| 15 | 2026-04-28 | Reliable reminder + digest qua GitHub Actions trigger độc lập (không phụ thuộc Render uptime). |
 
 ---
 
-*Cập nhật cuối: 2026-04-27 — sau Phase 14.1 (Smart button visibility).*
+## 19. Reliable reminder + digest (Phase 15)
+
+**Vấn đề phát hiện 2026-04-28:**
+
+- Buổi sáng nay 09:00 (Mentor MBO 39) → reminder ~8:30 **không gửi**. `external_reminders_sent` rỗng cho ngày đó → bot chưa từng tick reminder loop trong window 28-32 phút.
+- Digest 7h sáng cũng fire muộn (ghi nhận `last_digest_date = 2026-04-28` nhưng có lẽ sau 7h vài giờ).
+
+**Root cause:** Render Free sleep sau 15 phút không activity. GitHub Actions cron `*/10` (Phase 9) ping mỗi 10 phút **theo lý thuyết** đủ keep awake, nhưng **thực tế cron có thể trễ 5-15 phút** trong giờ cao điểm. Một ping bị trễ → gap > 15p → bot ngủ → bỏ lỡ reminder/digest window.
+
+### 19.1 Fix 2 lớp
+
+**Lớp 1 — tighten keep-alive** (`.github/workflows/keep-alive.yml`):
+```yaml
+- cron: "*/5 * * * *"   # was */10
+```
+Giảm xác suất gap > 15p. Nhưng vẫn không guarantee 100% — cron jitter có thể tạo gap 20p+ trong worst case.
+
+**Lớp 2 — trigger độc lập từ GitHub Actions** (chính thức bền vững):
+
+| Workflow | Schedule | Tác dụng |
+|---|---|---|
+| `daily-digest.yml` | `0 0 * * *` (00:00 UTC = 07:00 VN) | Chạy `scripts/trigger_digest.py` — đọc Turso + Calendar, gửi digest |
+| `reminders.yml` | `*/5 * * * *` | Chạy `scripts/trigger_reminders.py` — check window 25-35p trước event, gửi reminder cho lịch chưa được mark sent |
+
+GitHub Actions runner tự nó là Linux VM riêng, **không phụ thuộc Render uptime**. Workflow chạy trên môi trường sạch:
+- Checkout repo
+- `pip install -r requirements.txt`
+- Set env từ GitHub Secrets (TELEGRAM_*, TURSO_*, GOOGLE_*, ZOOM_*, CONTACT_*)
+- Chạy script
+
+### 19.2 Idempotency
+
+Cả 2 trigger đều idempotent với internal scheduler trong Render bot:
+
+- **Digest** dedupe qua `bot_meta.last_digest_date` — workflow check `if last_digest_date == today: skip`. Internal scheduler cũng check cùng meta. Bên nào fire trước thì bên kia skip.
+- **Reminder** dedupe qua `events.reminders_sent` (DB lịch bot) và `external_reminders_sent` (DB lịch external). `mark_reminded()` / `mark_external_reminded()` check `INSERT OR IGNORE`. Cả 2 nguồn (Render bot + GitHub Actions) đều update cùng table → no duplicate.
+
+### 19.3 Window mở rộng cho reminder workflow
+
+Internal scheduler dùng `REMINDER_HALF_WINDOW_MIN = 2` → window 28-32 phút (4 phút wide). Tick mỗi 60s nên cover được.
+
+GitHub Actions cron `*/5` có jitter 5-15p → script `trigger_reminders.py` tự mở rộng window thành 25-35 phút (10p wide):
+
+```python
+HALF_WIN = max(scheduler.REMINDER_HALF_WINDOW_MIN, 5)  # ≥ 5 phút each side
+lower = now + timedelta(minutes=30 - HALF_WIN)  # 25
+upper = now + timedelta(minutes=30 + HALF_WIN)  # 35
+```
+
+→ Cover được trường hợp workflow trễ tối đa 5 phút (event 9:00, expected ping 8:30, actual ping 8:35 → window vẫn catch nếu range 25-35).
+
+### 19.4 GitHub Secrets cần setup
+
+Lần đầu deploy Phase 15, cần chị Yến copy các env vars từ Render dashboard sang GitHub repo Settings → Secrets and variables → Actions → New repository secret:
+
+```
+TELEGRAM_BOT_TOKEN
+TELEGRAM_ALLOWED_CHAT_ID
+ZOOM_ACCOUNT_ID
+ZOOM_CLIENT_ID
+ZOOM_CLIENT_SECRET
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+GOOGLE_REFRESH_TOKEN
+GOOGLE_CALENDAR_ACCOUNT
+TURSO_DATABASE_URL
+TURSO_AUTH_TOKEN
+CONTACT_NAME
+CONTACT_TITLE
+```
+
+Sau khi set → 2 workflow tự chạy theo lịch. Lần đầu test có thể bấm `Run workflow` trong tab Actions để verify.
+
+### 19.5 Trade-off
+
+**Lợi:**
+- 100% reliable. GitHub Actions cron jitter chấp nhận được vì window được mở rộng.
+- Hoạt động ngay cả khi Render bot down hoàn toàn (vd downtime, deploy fail).
+- Dễ debug: mỗi workflow run có log đầy đủ trong tab Actions.
+
+**Trade-off:**
+- Mỗi run mất ~20s setup (checkout + pip install). Reminders chạy mỗi 5 phút = ~3000 phút/tháng cho mình job này. GitHub Actions free tier có 2000 phút/tháng cho private repo → có thể vượt quota nếu chạy mỗi 5p liên tục.
+- **Public repo: free tier UNLIMITED.** Repo `Yennie1702/zoom-calendar-bot` đang private → cần convert public hoặc chấp nhận chi phí thêm (~$0.008/phút beyond 2000).
+
+→ Em đề xuất khi nào sang Phase 15.1 sẽ tối ưu: cache pip install + skip workflow khi không có event sắp tới (đọc DB nhanh ở 1 step trước, exit early). Hiện tại MVP cứ chạy đầy đủ.
+
+---
+
+*Cập nhật cuối: 2026-04-28 — sau Phase 15 (External GitHub Actions triggers).*
