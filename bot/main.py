@@ -44,6 +44,7 @@ def _build_app() -> Application:
     app.add_handler(CommandHandler("list", handlers.cmd_list))
     app.add_handler(CommandHandler("sync", handlers.cmd_sync))
     app.add_handler(CommandHandler("today", handlers.cmd_today))
+    app.add_handler(CommandHandler("whoami", handlers.cmd_whoami))
     app.add_handler(CommandHandler("members", handlers.cmd_members))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text))
     app.add_handler(CallbackQueryHandler(handlers.handle_callback))

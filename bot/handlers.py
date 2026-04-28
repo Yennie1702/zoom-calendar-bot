@@ -380,6 +380,52 @@ async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_whoami(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Public command — KHÔNG check whitelist. Pre-work cho Phase 3 multi-user.
+
+    Trả về metadata Telegram của chính người gửi + chat hiện tại để chị Yến
+    lấy được user_id của thành viên team trước khi whitelist họ. An toàn:
+    chỉ echo identity của caller, KHÔNG leak data bot/DB/system.
+    """
+    _log_incoming(update)  # vẫn log để audit ai gọi /whoami
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.effective_message
+    if user is None or chat is None or msg is None:
+        return  # impossible cho text command nhưng defensive
+
+    # Tên Telegram (last_name + username có thể None)
+    name_parts = [user.first_name or ""]
+    if user.last_name:
+        name_parts.append(user.last_name)
+    full_name = " ".join(p for p in name_parts if p) or "(không có tên)"
+    username = f"@{user.username}" if user.username else "(không đặt username)"
+
+    # Thời gian VN
+    from bot import scheduler as _sched  # lazy import tránh circular
+    now = _sched._now_vn()
+    ts = now.strftime("%H:%M:%S %d/%m/%Y")
+
+    lines = [
+        "🆔 *Thông tin của bạn:*",
+        f"👤 User ID: `{user.id}`",
+        f"📛 Tên Telegram: {full_name}",
+        f"🔗 Username: {username}",
+        "",
+        "💬 *Thông tin chat hiện tại:*",
+        f"📍 Chat ID: `{chat.id}`",
+        f"📂 Loại chat: {chat.type}",
+    ]
+    if chat.title:  # có với group/supergroup/channel, None với private
+        lines.append(f"📋 Tên chat: {chat.title}")
+    lines.append(f"⏱ Thời gian: {ts}")
+
+    await msg.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # ── /list ──────────────────────────────────────────────────────────────────────
 async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Show paginated / filtered list. Without args → legacy "10 lịch gần nhất"."""
