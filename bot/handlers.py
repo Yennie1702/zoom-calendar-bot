@@ -422,6 +422,126 @@ async def cmd_today(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     audit(req, "/today")
 
 
+async def cmd_list_users(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/list_users` — Admin only. Hiện 3 user trong USERS config."""
+    req = await _gate(update, "/list_users")
+    if req is None:
+        return
+    if not req.is_admin:
+        msg = "❌ Lệnh này chỉ Admin (Hải Yến) được dùng."
+        await update.message.reply_text(msg)
+        audit(req, "/list_users", result="reject", error_message="not-admin")
+        return
+    users = list_user_configs()
+    lines = [f"👥 *Danh sách user trong hệ thống* ({len(users)} người):\n"]
+    for i, u in enumerate(users, 1):
+        role_tag = "Admin" if u.role == "admin" else "Member"
+        lines.append(
+            f"{i}. *{u.display_name}* ({role_tag})\n"
+            f"   Team: {u.team}\n"
+            f"   User ID: `{u.user_id}`\n"
+            f"   Email: {u.email}"
+        )
+    lines.append("")
+    lines.append("_Để thêm user mới: edit `bot/users_config.py` + push GitHub._")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+    )
+    audit(req, "/list_users")
+
+
+async def cmd_audit(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/audit` — Admin only. Sub-commands:
+      /audit                  → 20 log gần nhất
+      /audit today            → log hôm nay
+      /audit user <name>      → log của user (match display_name partial)
+      /audit errors           → chỉ result=fail/reject
+      /audit warnings         → alias của errors
+    """
+    req = await _gate(update, "/audit")
+    if req is None:
+        return
+    if not req.is_admin:
+        await update.message.reply_text("❌ Lệnh này chỉ Admin được dùng.")
+        audit(req, "/audit", result="reject", error_message="not-admin")
+        return
+
+    args = ctx.args or []
+    sub = (args[0].lower() if args else "")
+
+    kw: dict = {"limit": 20}
+    label = "20 log gần nhất"
+    if sub == "today":
+        from bot import scheduler as _sched
+        today = _sched._now_vn().date().isoformat()
+        kw["date_from"] = today
+        kw["date_to"] = today
+        label = f"log hôm nay ({today})"
+    elif sub == "user" and len(args) >= 2:
+        # Lookup user_id từ name partial
+        needle = " ".join(args[1:]).lower()
+        user_id = None
+        for u in list_user_configs():
+            if needle in u.display_name.lower():
+                user_id = u.user_id
+                label = f"log của {u.display_name}"
+                break
+        if user_id is None:
+            await update.message.reply_text(
+                f"⚠️ Không tìm thấy user khớp `{needle}`. "
+                f"Dùng /list_users xem tên có sẵn."
+            )
+            audit(req, "/audit", params=" ".join(args), result="fail",
+                  error_message=f"unknown user '{needle}'")
+            return
+        kw["user_id"] = user_id
+    elif sub in ("errors", "warnings", "reject"):
+        kw["only_errors"] = True
+        label = "log lỗi (fail/reject)"
+    elif sub == "":
+        pass  # default 20 mới nhất
+    else:
+        await update.message.reply_text(
+            "⚠️ Dùng:\n"
+            "• `/audit` — 20 log gần nhất\n"
+            "• `/audit today` — log hôm nay\n"
+            "• `/audit user <name>` — log theo user\n"
+            "• `/audit errors` — chỉ log fail/reject",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    rows = db.query_audit(**kw)
+    if not rows:
+        await update.message.reply_text(
+            f"📭 Không có {label}.", parse_mode=ParseMode.MARKDOWN,
+        )
+        audit(req, "/audit", params=" ".join(args))
+        return
+
+    lines = [f"📜 *Audit log* — {label} ({len(rows)} dòng):\n"]
+    for r in rows:
+        ts = (r.get("timestamp") or "")[:19].replace("T", " ")
+        result = r.get("result") or "?"
+        emoji = {"success": "✅", "fail": "❌", "reject": "⛔"}.get(result, "•")
+        cmd_str = r.get("command") or "?"
+        name = r.get("display_name") or "?"
+        mode = r.get("chat_mode") or "?"
+        params = r.get("params") or ""
+        params_str = f" `{params[:40]}…`" if len(params) > 40 else (f" `{params}`" if params else "")
+        err = r.get("error_message") or ""
+        err_str = f" — _{err[:60]}_" if err else ""
+        lines.append(
+            f"{emoji} `{ts}` *{name}* [{mode}] {cmd_str}{params_str}{err_str}"
+        )
+    # Truncate if quá dài (Telegram limit 4096)
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "\n…(truncated)"
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    audit(req, "/audit", params=" ".join(args))
+
+
 async def cmd_whoami(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Public command — KHÔNG check whitelist. Cho phép TẤT CẢ ai gõ.
 

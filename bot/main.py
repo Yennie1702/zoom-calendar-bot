@@ -47,6 +47,9 @@ def _build_app() -> Application:
     app.add_handler(CommandHandler("today", handlers.cmd_today))
     app.add_handler(CommandHandler("whoami", handlers.cmd_whoami))
     app.add_handler(CommandHandler("members", handlers.cmd_members))
+    # Phase 3 — admin-only commands
+    app.add_handler(CommandHandler("list_users", handlers.cmd_list_users))
+    app.add_handler(CommandHandler("audit", handlers.cmd_audit))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_text))
     app.add_handler(CallbackQueryHandler(handlers.handle_callback))
     return app
