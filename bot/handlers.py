@@ -22,7 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from bot import config, db, directory, external_events, formatter
+from bot import config, db, directory, external_events, formatter, group_notify
 from bot.calendar_client import CalendarClient
 # Phase 3 — multi-user permission gate
 from bot.permissions import (
@@ -2596,10 +2596,28 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             if not row or not pending or pending.get("event_id") != event_id:
                 await query.edit_message_text("⚠️ Phiên sync đã hết hạn.")
                 return
+            # Phase 3 — permission check
+            sync_perm = resolve_context(update)
+            ok, reason = can_modify_event(sync_perm, row)
+            if not ok:
+                await query.edit_message_text(reason, parse_mode=ParseMode.MARKDOWN)
+                audit(sync_perm, "/sync", params=f"id={event_id}",
+                      result="reject", error_message=reason)
+                return
             await query.edit_message_text("⏳ Đang sync Zoom + DB theo Calendar…")
             try:
                 _apply_drift_sync(row, pending["diffs"])
                 updated = db.get_event(event_id)
+                # Phase 3 — notify group nếu group mode + có thay đổi quan trọng
+                try:
+                    group_notify.notify_sync(
+                        updated or row,
+                        actor_display_name=sync_perm.display_name,
+                        actor_user_id=sync_perm.user_id,
+                        diffs=pending["diffs"],
+                    )
+                except Exception:
+                    log.exception("notify_sync failed (non-fatal)")
                 await query.edit_message_text(
                     "✅ Đã đồng bộ.\n\n" + formatter.format_event_detail(updated),
                     reply_markup=_detail_keyboard(event_id),
@@ -2790,6 +2808,13 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             chat_mode=req_mode,
         )
         ctx.chat_data["last_created_id"] = event_id
+        # Phase 3 — notify group khi mode='group' (no-op nếu personal)
+        try:
+            new_row = db.get_event(event_id)
+            if new_row:
+                group_notify.notify_create(new_row)
+        except Exception:
+            log.exception("notify_create failed (non-fatal)")
         reply = formatter.format_success_reply(
             cmd=cmd,
             zoom_join_url=zoom.join_url,
@@ -2934,6 +2959,12 @@ async def _do_edit(
             _apply_edit(row, field, new_value, notify=notify)
         ctx.chat_data.pop("pending_edit", None)
         updated = db.get_event(event_id)
+        # Phase 3 — notify group cho field quan trọng (skip 'ag' = nội dung)
+        try:
+            if updated and field != "ag":
+                _notify_edit_group(row, updated, field, perm_ctx)
+        except Exception:
+            log.exception("notify_edit failed (non-fatal)")
         await query.edit_message_text(
             f"✅ Đã cập nhật. {mail_note}\n\n" + formatter.format_event_detail(updated),
             reply_markup=_detail_keyboard(event_id),
@@ -2945,6 +2976,45 @@ async def _do_edit(
         await query.edit_message_text(
             f"❌ Lỗi apply: `{e}`", parse_mode=ParseMode.MARKDOWN
         )
+
+
+def _notify_edit_group(
+    old_row: db.EventRow, new_row: db.EventRow,
+    field: str, perm_ctx: RequestContext,
+) -> None:
+    """Helper: render diff cho group_notify.notify_edit (Phase 3)."""
+    label_map = {
+        "time": "🕐 Giờ/ngày",
+        "dur": "⏱ Thời lượng",
+        "topic": "🏷 Tiêu đề",
+        "att_add": "➕ Khách (thêm)",
+        "att_rm": "➖ Khách (bỏ)",
+    }
+    label = label_map.get(field)
+    if label is None:
+        return  # ag (agenda) → caller đã filter, không tới đây
+    if field == "time":
+        old_v = old_row.start_dt.strftime("%H:%M %d/%m/%Y")
+        new_v = new_row.start_dt.strftime("%H:%M %d/%m/%Y")
+    elif field == "dur":
+        old_v = f"{old_row.duration_min} phút"
+        new_v = f"{new_row.duration_min} phút"
+    elif field == "topic":
+        old_v = old_row.topic
+        new_v = new_row.topic
+    elif field in ("att_add", "att_rm"):
+        old_v = f"{len(old_row.attendees)} người"
+        new_v = f"{len(new_row.attendees)} người"
+    else:
+        return
+    group_notify.notify_edit(
+        new_row,
+        actor_display_name=perm_ctx.display_name,
+        actor_user_id=perm_ctx.user_id,
+        field_label=label,
+        old_value=old_v,
+        new_value=new_v,
+    )
 
 
 def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True) -> None:
@@ -3041,6 +3111,7 @@ async def _do_delete(query, event_id: int, *, notify: bool = True,
         await query.edit_message_text("⚠️ Lịch này không còn.")
         return
     # Phase 3 — permission check (skip nếu không có update để resolve ctx)
+    perm_ctx: RequestContext | None = None
     if update is not None:
         perm_ctx = resolve_context(update)
         ok, reason = can_modify_event(perm_ctx, row)
@@ -3063,6 +3134,15 @@ async def _do_delete(query, event_id: int, *, notify: bool = True,
     except Exception:
         log.exception("Calendar delete failed (soft-continuing)")
     db.mark_deleted(event_id)
+    # Phase 3 — notify group khi mode='group' (no-op nếu personal)
+    try:
+        actor_name = perm_ctx.display_name if perm_ctx else "?"
+        actor_uid = perm_ctx.user_id if perm_ctx else None
+        group_notify.notify_delete(
+            row, actor_display_name=actor_name, actor_user_id=actor_uid,
+        )
+    except Exception:
+        log.exception("notify_delete failed (non-fatal)")
     await query.edit_message_text(
         f"🗑 Đã xoá lịch *{row.topic}* (id={event_id}). {mail_note}",
         reply_markup=InlineKeyboardMarkup(
