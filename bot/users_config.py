@@ -29,6 +29,10 @@ class UserConfig:
     calendar_color: str  # Google Calendar eventColorId (1-11)
     title_prefix: str    # prefix Calendar event summary (vd "[John Academy] ")
     signature: str       # multi-line signature embed vào description
+    # Phase 3 commit #6 — telegram username để mention thật trong group
+    # (vd "@QuynhHuongNgo"). Chỉ trigger notification mạnh khi non-empty.
+    # Để empty nếu chưa biết → fallback tg://user?id= link (không noti).
+    telegram_username: str = ""
 
 
 # Phase 3 — initial roster
