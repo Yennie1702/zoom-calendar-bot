@@ -46,7 +46,9 @@ for key in "${KEYS[@]}"; do
     fail=$((fail+1))
     continue
   fi
-  if printf "%s" "$value" | gh secret set "$key" --body - >/dev/null 2>&1; then
+  # Pass via -b flag (string), KHÔNG dùng --body - (stdin) — stdin path
+  # đôi khi truncate trên 1 số gh CLI versions (chị Yến gặp ngày 2026-04-28).
+  if gh secret set "$key" --body "$value" >/dev/null 2>&1; then
     echo "  ✅ $key (len=${#value})"
     ok=$((ok+1))
   else
