@@ -65,6 +65,28 @@ _SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS ix_members_sort
         ON members (sort_order, email)
     """,
+    # Phase 3 — audit log cho multi-user (2026-04-28)
+    """
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        user_id INTEGER,
+        display_name TEXT,
+        chat_mode TEXT,
+        command TEXT,
+        params TEXT,
+        result TEXT,
+        error_message TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_audit_timestamp
+        ON audit_log (timestamp DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_audit_user_id
+        ON audit_log (user_id)
+    """,
 ]
 
 
@@ -89,6 +111,10 @@ class EventRow:
     reminders_sent: list[str] = None
     provider: str = "zoom"  # "zoom" (default) or "meet" (lịch HY cá nhân)
     meet_join_url: str = ""
+    # Phase 3 — multi-user attribution
+    created_by_user_id: int | None = None
+    created_by_display_name: str = ""
+    chat_mode: str = "personal"  # "personal" (default) or "group"
 
     def __post_init__(self):
         if self.cancelled_occurrences is None:
@@ -189,6 +215,21 @@ def _ensure_schema(c) -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+    # Phase 3 — multi-user attribution (2026-04-28). NULL cho rows cũ;
+    # backfill bằng `scripts/migrate_phase3.py` để gán owner=Hải Yến,
+    # chat_mode='personal'. Code mới luôn ghi non-null.
+    try:
+        c.execute("ALTER TABLE events ADD COLUMN created_by_user_id INTEGER")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        c.execute("ALTER TABLE events ADD COLUMN created_by_display_name TEXT")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        c.execute("ALTER TABLE events ADD COLUMN chat_mode TEXT")
+    except Exception:  # noqa: BLE001
+        pass
     # Meta KV table — used by daily digest + any future singleton state
     c.execute(
         "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -252,6 +293,21 @@ def _row_to_event(r) -> EventRow:
         meet_join_url = r["meet_join_url"] or ""
     except (KeyError, IndexError):
         meet_join_url = ""
+    # Phase 3 — attribution fields (NULL cho rows cũ chưa backfill)
+    try:
+        created_by_user_id = r["created_by_user_id"]
+        if created_by_user_id is not None:
+            created_by_user_id = int(created_by_user_id)
+    except (KeyError, IndexError, TypeError, ValueError):
+        created_by_user_id = None
+    try:
+        created_by_display_name = r["created_by_display_name"] or ""
+    except (KeyError, IndexError):
+        created_by_display_name = ""
+    try:
+        chat_mode_v = r["chat_mode"] or "personal"
+    except (KeyError, IndexError):
+        chat_mode_v = "personal"
     return EventRow(
         id=int(r["id"]),
         topic=r["topic"],
@@ -272,6 +328,9 @@ def _row_to_event(r) -> EventRow:
         reminders_sent=reminders,
         provider=provider,
         meet_join_url=meet_join_url,
+        created_by_user_id=created_by_user_id,
+        created_by_display_name=created_by_display_name,
+        chat_mode=chat_mode_v,
     )
 
 
@@ -290,6 +349,10 @@ def insert_event(
     calendar_event_link: str,
     provider: str = "zoom",
     meet_join_url: str = "",
+    # Phase 3 — multi-user attribution. Personal flow legacy default = chị Yến.
+    created_by_user_id: int = 8173041182,
+    created_by_display_name: str = "Hải Yến",
+    chat_mode: str = "personal",
 ) -> int:
     now = _now_iso()
     with _conn() as c:
@@ -299,8 +362,9 @@ def insert_event(
                 created_at, updated_at, topic, start_local, duration_min, agenda,
                 attendees, recurring, zoom_meeting_id, zoom_join_url, zoom_passcode,
                 calendar_event_id, calendar_event_link, status,
-                provider, meet_join_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                provider, meet_join_url,
+                created_by_user_id, created_by_display_name, chat_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
             """,
             (
                 now, now, topic, start_local, duration_min, agenda,
@@ -309,18 +373,37 @@ def insert_event(
                 zoom_meeting_id, zoom_join_url, zoom_passcode,
                 calendar_event_id, calendar_event_link,
                 provider, meet_join_url,
+                created_by_user_id, created_by_display_name, chat_mode,
             ),
         )
         return int(cur.lastrowid)
 
 
-def list_recent(limit: int = 10, *, active_only: bool = True) -> list[EventRow]:
-    q = "SELECT * FROM events"
+def list_recent(
+    limit: int = 10, *, active_only: bool = True,
+    chat_mode: str | None = None,
+    created_by_user_id: int | None = None,
+) -> list[EventRow]:
+    where = []
+    params: list = []
     if active_only:
-        q += " WHERE status = 'active'"
+        where.append("status = 'active'")
+    if chat_mode is not None:
+        where.append("(chat_mode = ? OR (chat_mode IS NULL AND ? = 'personal'))")
+        params.extend([chat_mode, chat_mode])
+    if created_by_user_id is not None:
+        where.append(
+            "(created_by_user_id = ? "
+            "OR (created_by_user_id IS NULL AND ? = 8173041182))"
+        )
+        params.extend([created_by_user_id, created_by_user_id])
+    q = "SELECT * FROM events"
+    if where:
+        q += " WHERE " + " AND ".join(where)
     q += " ORDER BY datetime(start_local) DESC, id DESC LIMIT ?"
+    params.append(limit)
     with _conn() as c:
-        rows = c.execute(q, (limit,)).fetchall()
+        rows = c.execute(q, tuple(params)).fetchall()
     return [_row_to_event(r) for r in rows]
 
 
@@ -333,6 +416,8 @@ def search_events(
     active_only: bool = True,
     limit: int = 10,
     offset: int = 0,
+    chat_mode: str | None = None,
+    created_by_user_id: int | None = None,
 ) -> list[EventRow]:
     """Filter events by topic keyword / attendee substring / date range.
 
@@ -360,6 +445,16 @@ def search_events(
     if date_to:
         where.append("date(start_local) <= ?")
         params.append(date_to)
+    # Phase 3 — chat_mode + ownership filter (NULL fallback cho rows cũ)
+    if chat_mode is not None:
+        where.append("(chat_mode = ? OR (chat_mode IS NULL AND ? = 'personal'))")
+        params.extend([chat_mode, chat_mode])
+    if created_by_user_id is not None:
+        where.append(
+            "(created_by_user_id = ? "
+            "OR (created_by_user_id IS NULL AND ? = 8173041182))"
+        )
+        params.extend([created_by_user_id, created_by_user_id])
 
     q = "SELECT * FROM events"
     if where:
@@ -378,6 +473,8 @@ def count_events(
     date_from: str | None = None,
     date_to: str | None = None,
     active_only: bool = True,
+    chat_mode: str | None = None,
+    created_by_user_id: int | None = None,
 ) -> int:
     """Count rows matching same filter spec as search_events — used for pagination."""
     where = []
@@ -397,6 +494,15 @@ def count_events(
     if date_to:
         where.append("date(start_local) <= ?")
         params.append(date_to)
+    if chat_mode is not None:
+        where.append("(chat_mode = ? OR (chat_mode IS NULL AND ? = 'personal'))")
+        params.extend([chat_mode, chat_mode])
+    if created_by_user_id is not None:
+        where.append(
+            "(created_by_user_id = ? "
+            "OR (created_by_user_id IS NULL AND ? = 8173041182))"
+        )
+        params.extend([created_by_user_id, created_by_user_id])
 
     q = "SELECT COUNT(*) AS n FROM events"
     if where:
@@ -669,3 +775,85 @@ def find_conflicts(
                 hits.append((ev, occ_start.isoformat(timespec="seconds")))
                 break
     return hits
+
+
+# ── Phase 3 — Audit log ───────────────────────────────────────────────────────
+_AUDIT_PARAMS_MAX = 500
+
+
+def log_audit(
+    *,
+    user_id: int | None,
+    display_name: str,
+    chat_mode: str,
+    command: str,
+    params: str = "",
+    result: str = "success",
+    error_message: str = "",
+) -> None:
+    """Insert 1 dòng audit. `params` truncate để tránh DB blow up.
+
+    `result` enum: "success" / "fail" / "reject" (UNAUTHORIZED + permission deny).
+    """
+    if params and len(params) > _AUDIT_PARAMS_MAX:
+        params = params[:_AUDIT_PARAMS_MAX] + "…(truncated)"
+    if error_message and len(error_message) > _AUDIT_PARAMS_MAX:
+        error_message = error_message[:_AUDIT_PARAMS_MAX] + "…(truncated)"
+    try:
+        with _conn() as c:
+            c.execute(
+                "INSERT INTO audit_log (timestamp, user_id, display_name, "
+                "chat_mode, command, params, result, error_message) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _now_iso(), user_id, display_name, chat_mode,
+                    command, params, result, error_message,
+                ),
+            )
+    except Exception:
+        log.exception("audit_log insert fail (non-fatal)")
+
+
+def query_audit(
+    *,
+    limit: int = 20,
+    user_id: int | None = None,
+    date_from: str | None = None,   # ISO date YYYY-MM-DD
+    date_to: str | None = None,
+    only_errors: bool = False,
+) -> list[dict]:
+    """Cho /audit — trả list dict ngắn gọn để format reply."""
+    where = []
+    params: list = []
+    if user_id is not None:
+        where.append("user_id = ?")
+        params.append(user_id)
+    if date_from:
+        where.append("date(timestamp) >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("date(timestamp) <= ?")
+        params.append(date_to)
+    if only_errors:
+        where.append("result IN ('fail', 'reject')")
+    q = "SELECT timestamp, user_id, display_name, chat_mode, command, params, result, error_message FROM audit_log"
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    q += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    with _conn() as c:
+        rows = c.execute(q, tuple(params)).fetchall()
+    out: list[dict] = []
+    cols = [
+        "timestamp", "user_id", "display_name", "chat_mode",
+        "command", "params", "result", "error_message",
+    ]
+    for r in rows:
+        d = {}
+        for col in cols:
+            try:
+                d[col] = r[col]
+            except (KeyError, IndexError):
+                d[col] = None
+        out.append(d)
+    return out
