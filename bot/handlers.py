@@ -1839,7 +1839,9 @@ def _parse_cal_datetime(s: str) -> datetime:
 
 def compute_drift(row: db.EventRow) -> dict:
     """Return dict of {field: (db_value, cal_value)} for fields out of sync."""
-    event = _get_calendar().get_event(row.calendar_event_id)
+    event = _get_calendar().get_event(
+        row.calendar_event_id, calendar_id=_calendar_id_for_row(row),
+    )
     diffs: dict = {}
 
     cal_start_str = event.get("start", {}).get("dateTime")
@@ -2155,7 +2157,9 @@ def _fetch_occurrences(row: db.EventRow) -> list[dict]:
             zoom_detail.get("occurrences", []),
             key=lambda o: o["start_time"],
         )
-    cal_instances = _get_calendar().list_instances(row.calendar_event_id)
+    cal_instances = _get_calendar().list_instances(
+        row.calendar_event_id, calendar_id=_calendar_id_for_row(row),
+    )
     cal_instances_sorted = sorted(
         cal_instances,
         key=lambda e: (e.get("originalStartTime", {}).get("dateTime")
@@ -3150,6 +3154,22 @@ async def _do_edit(
         )
 
 
+def _calendar_id_for_row(row: db.EventRow) -> str:
+    """Phase 3 — resolve calendar_id để delete/edit/sync đúng Calendar đã tạo.
+
+    Bot insert event vào Calendar khác primary (vd TEAM Calendar cho group
+    mode). Khi delete/patch sau đó, KHÔNG pass calendar_id → API mặc định
+    vào primary → event không có ở primary → treat thành "decline" thay vì
+    xoá thật. Helper này resolve calendar_id từ row.chat_mode.
+    """
+    from bot.permissions import CALENDAR_PERSONAL_ID, CALENDAR_TEAM_ID
+    if (row.chat_mode or "personal") == "group":
+        cal = CALENDAR_TEAM_ID()
+        if cal:
+            return cal
+    return CALENDAR_PERSONAL_ID()
+
+
 def _format_field_diff(
     old_row: db.EventRow, new_row: db.EventRow, field: str,
 ) -> str:
@@ -3244,6 +3264,7 @@ def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True)
         summary_update = f"[John Academy] {topic}" if field == "topic" else None
     _get_calendar().patch_event(
         row.calendar_event_id,
+        calendar_id=_calendar_id_for_row(row),
         summary=summary_update,
         description=new_description,
         start_local_iso=start_local if field in ("time", "dur") else None,
@@ -3294,7 +3315,11 @@ async def _do_delete(query, event_id: int, *, notify: bool = True,
         except Exception:
             log.exception("Zoom delete failed (soft-continuing)")
     try:
-        _get_calendar().delete_event(row.calendar_event_id, notify=notify)
+        _get_calendar().delete_event(
+            row.calendar_event_id,
+            calendar_id=_calendar_id_for_row(row),
+            notify=notify,
+        )
     except Exception:
         log.exception("Calendar delete failed (soft-continuing)")
     db.mark_deleted(event_id)
@@ -3354,6 +3379,7 @@ def _apply_occurrence_edit(
     if occ["cal_instance_id"]:
         _get_calendar().patch_instance(
             occ["cal_instance_id"],
+            calendar_id=_calendar_id_for_row(row),
             start_local_iso=start_iso if field in ("time", "dur") else None,
             end_local_iso=end_iso,
             notify=notify,
@@ -3408,7 +3434,11 @@ async def _do_delete_occurrence(
                 log.exception("Zoom occurrence delete failed")
         if occ["cal_instance_id"]:
             try:
-                _get_calendar().cancel_instance(occ["cal_instance_id"], notify=notify)
+                _get_calendar().cancel_instance(
+                    occ["cal_instance_id"],
+                    calendar_id=_calendar_id_for_row(row),
+                    notify=notify,
+                )
             except Exception:
                 log.exception("Calendar instance cancel failed")
         db.add_cancelled_occurrence(event_id, occ["start_local"])
