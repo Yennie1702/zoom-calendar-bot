@@ -109,6 +109,15 @@ async def _reject(update: Update) -> None:
     )
 
 
+def _list_cmd_for(ctx_chat_data: dict | None = None,
+                  mode: str | None = None) -> str:
+    """Return '/mylist' nếu group mode, '/list' nếu personal — Phase 3 hint
+    đúng cho member trong group (member không dùng được /list)."""
+    if mode is None and ctx_chat_data is not None:
+        mode = ctx_chat_data.get("request_mode")
+    return "/mylist" if mode == "group" else "/list"
+
+
 async def _gate(
     update: Update, command: str, *, silent_reject: bool = False,
 ) -> RequestContext | None:
@@ -1691,7 +1700,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     is_hy = is_personal_prefix(text)
     if "tạo lịch" not in low_txt and "tao lich" not in low_txt and not is_hy:
         await update.message.reply_text(
-            "Em chưa hiểu. Gõ /help để xem ví dụ hoặc /list để quản lý lịch cũ."
+            f"Em chưa hiểu. Gõ /help để xem ví dụ hoặc {_list_cmd_for(ctx.chat_data)} để quản lý lịch cũ."
         )
         return
 
@@ -1883,7 +1892,9 @@ async def _handle_edit_value(
     row = db.get_event(event_id)
     if row is None or row.status != "active":
         ctx.chat_data.pop("edit_mode", None)
-        await update.message.reply_text("⚠️ Lịch này không còn tồn tại. Gõ /list để xem.")
+        await update.message.reply_text(
+            f"⚠️ Lịch này không còn tồn tại. Gõ {_list_cmd_for(ctx.chat_data)} để xem."
+        )
         return
 
     try:
@@ -1904,7 +1915,9 @@ async def _handle_edit_value(
     if occ_idx is not None:
         occs = ctx.chat_data.get("occurrences", {}).get(event_id, [])
         if occ_idx >= len(occs):
-            await update.message.reply_text("⚠️ Danh sách buổi đã cũ. Gõ /list làm lại.")
+            await update.message.reply_text(
+                f"⚠️ Danh sách buổi đã cũ. Gõ {_list_cmd_for(ctx.chat_data)} làm lại."
+            )
             ctx.chat_data.pop("pending_edit", None)
             return
         preview = formatter.format_occurrence_preview(
@@ -2176,7 +2189,7 @@ async def _apply_quick_edit_to_row(
         if row.recurring:
             note = (
                 "\n\n⚠️ Đây là lịch lặp. Xoá tại đây sẽ huỷ *toàn bộ series*. "
-                "Muốn huỷ 1 buổi thôi thì /list → bấm lịch → 🗑 → *Chỉ 1 buổi*."
+                f"Muốn huỷ 1 buổi thôi thì {_list_cmd_for(ctx.chat_data)} → bấm lịch → 🗑 → *Chỉ 1 buổi*."
             )
         await reply.reply_text(
             f"🗑 Xoá lịch sau?\n\n{detail}{note}",
@@ -2788,7 +2801,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             event_id, i = int(eid), int(idx)
             occs = ctx.chat_data.get("occurrences", {}).get(event_id)
             if not occs or i >= len(occs):
-                await query.edit_message_text("⚠️ Danh sách đã cũ. Gõ /list làm lại.")
+                await query.edit_message_text(
+                    f"⚠️ Danh sách đã cũ. Gõ {_list_cmd_for(ctx.chat_data)} làm lại."
+                )
                 return
             await query.edit_message_text(
                 f"✏️ Sửa buổi {formatter.format_occurrence_date(occs[i])} "
@@ -2992,7 +3007,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             event_id, i = int(eid), int(idx)
             occs = ctx.chat_data.get("occurrences", {}).get(event_id)
             if not occs or i >= len(occs):
-                await query.edit_message_text("⚠️ Danh sách đã cũ. Gõ /list làm lại.")
+                await query.edit_message_text(
+                    f"⚠️ Danh sách đã cũ. Gõ {_list_cmd_for(ctx.chat_data)} làm lại."
+                )
                 return
             row = db.get_event(event_id)
             if not row:
@@ -3012,7 +3029,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             notify = parts[3] == "n" if len(parts) > 3 else True
             occs = ctx.chat_data.get("occurrences", {}).get(event_id)
             if not occs or i >= len(occs):
-                await query.edit_message_text("⚠️ Danh sách đã cũ. Gõ /list làm lại.")
+                await query.edit_message_text(
+                    f"⚠️ Danh sách đã cũ. Gõ {_list_cmd_for(ctx.chat_data)} làm lại."
+                )
                 return
             await _do_delete_occurrence(query, event_id, occs[i], notify=notify)
             return
@@ -3278,7 +3297,7 @@ async def _do_edit(
         if occ_idx is not None:
             occs = ctx.chat_data.get("occurrences", {}).get(event_id, [])
             if occ_idx >= len(occs):
-                raise RuntimeError("Danh sách buổi đã cũ, gõ /list làm lại.")
+                raise RuntimeError(f"Danh sách buổi đã cũ, gõ {_list_cmd_for(ctx.chat_data)} làm lại.")
             _apply_occurrence_edit(row, occs[occ_idx], field, new_value, notify=notify)
         else:
             _apply_edit(row, field, new_value, notify=notify)
