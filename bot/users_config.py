@@ -53,27 +53,27 @@ USERS: dict[int, UserConfig] = {
     ),
     8699500614: UserConfig(
         user_id=8699500614,
-        display_name="Hương",
+        display_name="Quỳnh Hương",
         email="ngoquynhhuong@john.vn",
         role="member",
         team="JoyClub",
         calendar_color="9",  # Blueberry — xanh biển
         title_prefix="",
         signature=(
-            "Người phụ trách: Hương - JoyClub\n"
+            "Người phụ trách: Quỳnh Hương - JoyClub\n"
             "Zalo/SĐT: 0352118348"
         ),
     ),
     5069935322: UserConfig(
         user_id=5069935322,
-        display_name="Thuỳ",
+        display_name="Vũ Kim Thuỳ",
         email="vukimthuy@john.vn",
         role="member",
         team="JohnBook",
         calendar_color="10",  # Basil — xanh lá
         title_prefix="",
         signature=(
-            "Người phụ trách: Thuỳ - JohnBook\n"
+            "Người phụ trách: Vũ Kim Thuỳ - JohnBook\n"
             "Zalo/SĐT: 0389995944"
         ),
     ),
