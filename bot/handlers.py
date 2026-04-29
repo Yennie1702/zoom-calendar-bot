@@ -2905,7 +2905,13 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if req_mode == "group" and creator_cfg is not None:
             from bot.permissions import CALENDAR_TEAM_ID
             target_cal = CALENDAR_TEAM_ID() or None
-            target_color = creator_cfg.calendar_color
+            # Phase 3.x: chỉ enforce color cho member (Hương/Thuỳ) để phân biệt
+            # creator visually trên Calendar UI. Admin (Yến) dùng default
+            # Calendar TEAM giống personal mode (chị tự setup màu Calendar UI).
+            target_color = (
+                creator_cfg.calendar_color
+                if creator_cfg.role == "member" else None
+            )
             title_prefix = creator_cfg.title_prefix
             # Group attendees = khách + creator email (Kịch bản B)
             final_attendees = list(cmd.attendees)
