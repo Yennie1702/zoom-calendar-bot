@@ -1,6 +1,6 @@
 # JA Scheduler Bot — Tài liệu Thiết kế Tính năng Chi tiết
 
-**Phiên bản:** 1.2 (2026-04-27)
+**Phiên bản:** 1.3 (2026-04-29)
 **Companion:** [01-system-design.md](01-system-design.md)
 
 ---
@@ -23,6 +23,14 @@
 14. [Sổ thành viên công ty — `/members` + picker](#14-sổ-thành-viên-công-ty)
 15. [Storage backend cho Members (Phase 12)](#15-storage-backend-cho-members-phase-12)
 16. [Resolve tên thành email trong prompt (Phase 13)](#16-resolve-tên-thành-email-trong-prompt-phase-13)
+17. [Phase 3.0 — `/whoami` public command](#17-phase-30--whoami-public-command)
+18. [Phase 3 — Multi-user architecture](#18-phase-3--multi-user-architecture)
+19. [Phase 3 — DB schema + migration](#19-phase-3--db-schema--migration)
+20. [Phase 3 — Permission matrix + chat_mode flow](#20-phase-3--permission-matrix--chat_mode-flow)
+21. [Phase 3 — Reply confirm gộp creator info](#21-phase-3--reply-confirm-gộp-creator-info)
+22. [Phase 3 — `/mylist` + `/list_users` + `/audit`](#22-phase-3--mylist--list_users--audit)
+23. [Phase 3 — Setup checklist (Render + GH + Drive)](#23-phase-3--setup-checklist-render--gh--drive)
+24. [Phase 3 — Bug fixes hậu deploy](#24-phase-3--bug-fixes-hậu-deploy)
 
 ---
 
@@ -1256,3 +1264,439 @@ Sau khi set → 2 workflow tự chạy theo lịch. Lần đầu test có thể 
 ---
 
 *Cập nhật cuối: 2026-04-28 — sau Phase 15 (External GitHub Actions triggers).*
+
+---
+
+## 17. Phase 3.0 — `/whoami` public command
+
+**Mục đích:** Pre-work cho Phase 3 multi-user. Cần lấy `user_id` + `chat_id` của Hương + Thuỳ trước khi whitelist họ vào `USERS` config.
+
+**Đặc thù:**
+- Public — bypass `_is_allowed` check (mọi user gõ được)
+- Audit log: nếu user_id không trong USERS → log với `display_name="UNAUTHORIZED_USER"`, `result="reject"` để admin thấy probe attempts qua `/audit warnings`
+
+**Output:**
+```
+🆔 Thông tin của bạn:
+👤 User ID: <id>
+📛 Tên Telegram: <first> <last>
+🔗 Username: @<username>
+💬 Thông tin chat hiện tại:
+📍 Chat ID: <chat_id>
+📂 Loại chat: <type>
+📋 Tên chat: <title>          (chỉ group/supergroup)
+⏱ Thời gian: HH:MM:SS DD/MM/YYYY VN
+```
+
+**Implementation:** `bot/handlers.cmd_whoami` — defensive None handling cho `last_name`, `username`, `chat.title`.
+
+---
+
+## 18. Phase 3 — Multi-user architecture
+
+**Mục tiêu:** Mở rộng bot từ 1 user (chị Yến) → 3 user (chị Yến + Hương + Thuỳ) trong group "JA Scheduler Team", giữ nguyên 100% behavior chế độ Personal hiện tại.
+
+### 18.1 Hai chế độ song song
+
+| Chế độ | Chat | Calendar | Color | Template | Attendees |
+|---|---|---|---|---|---|
+| **Personal** | 1-1 chị Yến (chat_id=8173041182) | `primary` | default Calendar | "Hải Yến \| John Academy" hardcode | chỉ khách |
+| **Group** | "JA Scheduler Team" (chat_id=-5136308743) | `GOOGLE_CALENDAR_TEAM_ID` | theo `USERS[uid].calendar_color` (Hương=9, Thuỳ=10; Yến admin = default) | `USERS[uid].signature` | khách + creator email |
+
+### 18.2 USERS config (`bot/users_config.py`)
+
+Source of truth = file Python commit lên git (3 user, hiếm thay đổi → file đơn giản hơn DB CRUD).
+
+```python
+@dataclass(frozen=True)
+class UserConfig:
+    user_id: int
+    display_name: str          # "Hải Yến" / "Quỳnh Hương" / "Vũ Kim Thuỳ"
+    email: str
+    role: str                   # "admin" | "member"
+    team: str                   # "John Academy" / "JoyClub" / "JohnBook"
+    calendar_color: str        # eventColorId (1-11)
+    title_prefix: str          # "[John Academy] " hoặc ""
+    signature: str             # multi-line embed Calendar description
+    telegram_username: str = ""  # cho mention reminder (vd "QuynhHuongNgo")
+```
+
+3 entries: Hải Yến (admin/JA/cam), Quỳnh Hương (member/JoyClub/xanh biển), Vũ Kim Thuỳ (member/JohnBook/xanh lá).
+
+### 18.3 Permission gate (`bot/permissions.py`)
+
+`resolve_context(update) → RequestContext`:
+- chat_id == OWNER_USER_ID && user_id == OWNER_USER_ID → mode='personal'
+- chat_id == GROUP_CHAT_ID && user_id ∈ USERS → mode='group'
+- chat_id == GROUP_CHAT_ID && user_id ∉ USERS → mode='reject' với "chưa được cấp quyền"
+- Khác → mode='reject' với "chat không được phép"
+
+`can_modify_event(ctx, row)`:
+- Cross-mode (personal user thao tác group row, vice versa) → reject
+- Personal mode → full quyền
+- Group + admin → full quyền với group rows
+- Group + member → chỉ row mình tạo (`row.created_by_user_id == ctx.user_id`)
+
+`audit(ctx, command, params, result, error_message)`: wrap `db.log_audit` với context auto-fill.
+
+---
+
+## 19. Phase 3 — DB schema + migration
+
+### 19.1 Schema additions
+
+**Bảng `events`** thêm 3 cột (idempotent ALTER với try/except):
+```sql
+created_by_user_id INTEGER          -- Telegram user_id người tạo
+created_by_display_name TEXT        -- snapshot tên tại lúc tạo
+chat_mode TEXT                      -- "personal" | "group"
+```
+
+**Bảng `audit_log`** mới (CREATE IF NOT EXISTS + 2 index):
+```sql
+CREATE TABLE audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,        -- ISO 8601 UTC
+    user_id INTEGER,
+    display_name TEXT,
+    chat_mode TEXT,                 -- "personal" | "group" | "reject" | "unknown"
+    command TEXT,
+    params TEXT,                    -- JSON-stringified, max 500 chars
+    result TEXT,                    -- "success" | "fail" | "reject"
+    error_message TEXT
+);
+CREATE INDEX ix_audit_timestamp ON audit_log (timestamp DESC);
+CREATE INDEX ix_audit_user_id ON audit_log (user_id);
+```
+
+### 19.2 Migration backfill (`scripts/migrate_phase3.py`)
+
+Idempotent — chỉ UPDATE rows có `created_by_user_id IS NULL`:
+```sql
+UPDATE events
+SET created_by_user_id = 8173041182,
+    created_by_display_name = 'Hải Yến',
+    chat_mode = 'personal'
+WHERE created_by_user_id IS NULL;
+```
+
+Chạy thủ công local sau commit code: `venv/bin/python scripts/migrate_phase3.py --yes`.
+
+### 19.3 NULL fallback trong query
+
+`list_recent / search_events / count_events / events_on_date` thêm filter optional `chat_mode` + `created_by_user_id`. WHERE clause với NULL fallback (cho rows cũ chưa backfill):
+
+```sql
+(chat_mode = ? OR (chat_mode IS NULL AND ? = 'personal'))
+(created_by_user_id = ? OR (created_by_user_id IS NULL AND ? = 8173041182))
+```
+
+→ Trước khi backfill, lịch cũ vẫn truy xuất được như personal/Yến.
+
+### 19.4 Rename display_name (2026-04-29 hot-fix)
+
+Sau khi deploy Phase 3 ban đầu, chị Yến yêu cầu đổi tên:
+- "Hương" → "Quỳnh Hương"
+- "Thuỳ" → "Vũ Kim Thuỳ"
+
+`scripts/migrate_display_names.py` backfill `events.created_by_display_name` + `audit_log.display_name` cho rows cũ. Idempotent — filter `WHERE display_name = old_name`.
+
+---
+
+## 20. Phase 3 — Permission matrix + chat_mode flow
+
+### 20.1 Permission matrix
+
+| Hành động | Personal | Group-Member | Group-Admin |
+|---|:-:|:-:|:-:|
+| `/whoami` | ✅ | ✅ | ✅ |
+| Tạo lịch | ✅ | ✅ | ✅ |
+| `/mylist` | ✅ | ✅ | ✅ |
+| `/list` (all) | ✅ | ❌ "dùng /mylist" | ✅ |
+| `/list_users` | ✅ | ❌ admin only | ✅ |
+| Sửa/xoá lịch mình | ✅ | ✅ | ✅ |
+| Sửa/xoá lịch người khác | N/A | ❌ | ✅ |
+| `/sync ID` | ✅ | ✅ (lịch mình) | ✅ (all) |
+| `/audit` | ✅ | ❌ | ✅ |
+| `/members` (read) | ✅ | ✅ | ✅ |
+| `/members add/rm` | ✅ | ❌ admin only | ✅ |
+| `HY` mode | ✅ | ❌ "chỉ personal" | ❌ |
+
+### 20.2 Create flow theo mode
+
+`_do_create` branch theo `req_mode`:
+
+```
+if req_mode == "group" and creator_cfg:
+    target_cal = CALENDAR_TEAM_ID()
+    target_color = creator_cfg.calendar_color if creator_cfg.role == "member" else None
+    # Yến (admin) trong group: dùng default Calendar TEAM (chị set màu sẵn)
+    # Hương/Thuỳ (member): override color (xanh biển/xanh lá)
+    title_prefix = creator_cfg.title_prefix
+    final_attendees = khách + creator.email   # Kịch bản B
+    description = format_group_calendar_description(...)  # signature từ USERS
+else:  # personal
+    target_cal = None  # primary
+    target_color = None  # default Calendar primary
+    title_prefix = "[John Academy] "
+    final_attendees = khách
+    description = format_calendar_description(...)  # template cũ
+```
+
+Insert event với attribution:
+```python
+db.insert_event(
+    ...
+    created_by_user_id=req.user_id,
+    created_by_display_name=req.display_name,
+    chat_mode=req.mode,
+)
+```
+
+### 20.3 calendar_id propagation cho mọi Calendar API call
+
+**Bug fix critical** (Phase 3 commit `8d68112`): mọi API call sau insert (delete/edit/sync/occurrence) phải truyền `calendar_id` đúng theo row.chat_mode.
+
+Helper `_calendar_id_for_row(row) → str`:
+- `chat_mode='group'` → `CALENDAR_TEAM_ID()`
+- `chat_mode='personal'` (or NULL) → `CALENDAR_PERSONAL_ID()` (= primary)
+
+Wire vào 6 nơi:
+- `compute_drift` → `get_event`
+- `_fetch_occurrences` → `list_instances`
+- `_apply_edit` → `patch_event`
+- `_do_delete` → `delete_event`
+- `_apply_occurrence_edit` → `patch_instance`
+- `_do_delete_occurrence` → `cancel_instance`
+
+**Trước fix**: API mặc định calendarId=primary → event ở Calendar TEAM không bị xoá thật, chỉ remove chị Yến khỏi attendees (organizer = Calendar TEAM). Symptom: chị Yến phản ánh "lịch xoá nhưng vẫn hiện trên Calendar TEAM, attendees còn lan@abc.com".
+
+---
+
+## 21. Phase 3 — Reply confirm gộp creator info
+
+### 21.1 Vấn đề ban đầu
+
+Phase 3 commit #4 thiết kế `bot/group_notify.py` gửi tin riêng vào group chat khi có create/edit/delete/sync trong group mode. Kết quả: **2 tin cho mỗi action** (reply confirm + notify riêng) → spam group, content trùng lặp.
+
+Chị Yến phản ánh + yêu cầu **gộp 2 thành 1**.
+
+### 21.2 Giải pháp — augment reply confirm
+
+Trong group mode, inject creator/actor info vào reply confirm thay vì gửi tin notify riêng.
+
+**Create reply** (group mode):
+```
+✅ Đã tạo xong: *Tư vấn JoyClub*
+👤 *Người tạo:* Quỳnh Hương (JoyClub)
+
+📅 Thứ 5, 30/4/2026, 14:00 - 15:00
+⏱ 60 phút/buổi
+🔗 Link Zoom: ...
+📧 Đã mời khách:
+  • lan@abc.com
+  • ngoquynhhuong@john.vn
+🆔 DB id: 26 — gõ /mylist để sửa/xoá.
+```
+
+**Edit reply** (group mode):
+```
+✅ Đã cập nhật. Khách sẽ nhận email cập nhật.
+👤 *Sửa bởi:* Quỳnh Hương (JoyClub)
+✏️ 🕐 Giờ/ngày: 14:00 30/04/2026 → 15:30 30/04/2026
+
+[format_event_detail(row) đầy đủ]
+```
+
+**Delete reply** (group mode):
+```
+🗑 Đã xoá lịch *Tư vấn JoyClub* (id=26). Khách đã nhận email huỷ.
+👤 *Xoá bởi:* Quỳnh Hương (JoyClub)
+⏰ Thời gian: 14:00 30/04/2026 (60 phút)
+```
+
+**Sync reply** (group mode):
+```
+✅ Đã đồng bộ.
+👤 *Sửa bởi:* Hải Yến (John Academy)
+🔄 Thay đổi (Calendar → Bot + Zoom):
+  • Giờ: 14:00 → 15:00
+
+[format_event_detail(updated)]
+```
+
+### 21.3 Filter spec
+
+Notify cho group reply chỉ inject actor + diff khi field thuộc:
+- `time` (giờ/ngày)
+- `dur` (thời lượng)
+- `topic` (tên lịch)
+- `att_add` / `att_rm` (thêm/bỏ khách)
+
+**Skip cho `ag` (agenda/nội dung)** — Q1.A spec: nội dung mô tả ít quan trọng, không cần broadcast.
+
+**Skip cho `/sync` no-diff**: nếu drift apply không có thay đổi quan trọng (chỉ agenda hoặc empty diffs) → reply confirm không inject diff block.
+
+### 21.4 Personal mode KHÔNG đổi
+
+Reply confirm cho personal mode giữ nguyên format cũ (không có dòng "Người tạo: ..."). Detect qua `req_mode == "group"` trước khi inject.
+
+`bot/group_notify.py` giữ trong code base (dead code dự phòng cho future use, vd reminder broadcast riêng), nhưng KHÔNG được wire vào handlers.
+
+### 21.5 Hint command theo mode
+
+Tin reply confirm cuối có dòng `🆔 DB id: X — gõ {cmd} để sửa/xoá.`:
+- Personal mode → `/list`
+- Group mode → `/mylist` (vì `/list` admin only, member click bị reject)
+
+---
+
+## 22. Phase 3 — `/mylist` + `/list_users` + `/audit`
+
+### 22.1 `/mylist` (member-friendly)
+
+Filter `chat_mode=req.mode AND created_by_user_id=req.user_id` → chỉ lịch của chính người gõ.
+
+**Bypass legacy `format_list` path** (commit `37d311c` privacy fix): render header + summary trực tiếp:
+```
+📋 *Lịch của Quỳnh Hương* (chế độ group, N lịch):
+1. 🎯 30/4 14:00 · Tư vấn JoyClub
+...
+```
+
+Empty state:
+```
+📭 Quỳnh Hương chưa tạo lịch nào trong chế độ group.
+```
+
+### 22.2 `/list` (admin-only trong group)
+
+- Personal mode → tất cả lịch personal của Yến (như cũ)
+- Group + admin (Yến) → tất cả lịch group, có pagination + filter
+- Group + member → reject với hint "Bạn chỉ xem được /mylist..."
+
+### 22.3 `/list_users` (admin-only)
+
+Hiện 3 users từ `USERS` dict format theo spec:
+```
+👥 Danh sách user trong hệ thống (3 người):
+
+1. Hải Yến (Admin)
+   Team: John Academy
+   User ID: 8173041182
+   Email: nguyenthihaiyen@john.vn
+...
+```
+
+### 22.4 `/audit` (admin-only)
+
+4 sub-commands:
+- `/audit` — 20 log gần nhất
+- `/audit today` — log ngày VN hôm nay (date_from = date_to = today)
+- `/audit user <name>` — match `display_name` partial (case-insensitive) → user_id
+- `/audit errors` (alias `warnings`, `reject`) — `result IN ('fail','reject')`
+
+Output compact line: `<emoji> <ts> <name> [<mode>] <command> <params...> — <error>`. Icons: ✅ success, ❌ fail, ⛔ reject. Truncate output > 3900 chars (Telegram 4096 limit).
+
+---
+
+## 23. Phase 3 — Setup checklist (Render + GH + Drive)
+
+### 23.1 Render env vars (chị Yến set qua dashboard)
+
+```
+TELEGRAM_OWNER_USER_ID         = 8173041182
+TELEGRAM_GROUP_CHAT_ID         = -5136308743
+GOOGLE_CALENDAR_PERSONAL_ID    = primary
+GOOGLE_CALENDAR_TEAM_ID        = c_85a9e82f...@group.calendar.google.com
+```
+
+`TELEGRAM_ALLOWED_CHAT_ID` giữ nguyên `8173041182` (legacy fallback).
+
+### 23.2 GitHub Secrets bổ sung (cho reminder workflow)
+
+```bash
+gh secret set TELEGRAM_OWNER_USER_ID --body "8173041182"
+gh secret set TELEGRAM_GROUP_CHAT_ID --body "-5136308743"
+```
+
+### 23.3 Telegram setup
+
+1. **@BotFather** → `/mybots` → JA Scheduler bot → Bot Settings → **Group Privacy** → **Turn off** (mặc định bot trong group chỉ thấy commands; tắt để bot thấy text "Tạo lịch ...")
+2. **Kick bot khỏi group + add lại** sau khi tắt privacy (Telegram cache permission cũ trên server side, kick + add mới refresh)
+3. (Optional) Promote bot làm admin với quyền "Pin messages" để auto-pin tin help/intro
+
+### 23.4 Google Calendar TEAM setup
+
+1. Tạo Calendar mới tên "JA Scheduler Team" trên Google Calendar UI
+2. Lấy Calendar ID từ Settings → Integrate calendar → "Calendar ID"
+3. Set vào env `GOOGLE_CALENDAR_TEAM_ID`
+4. Share với Hương (`ngoquynhhuong@john.vn`) + Thuỳ (`vukimthuy@john.vn`) với quyền **"Make changes to events"**
+5. (Optional) Set default color cho Calendar TEAM trong UI — chị Yến (admin) tạo lịch sẽ dùng màu này
+
+### 23.5 Migration (chạy local 1 lần sau deploy)
+
+```bash
+venv/bin/python scripts/migrate_phase3.py --yes
+```
+
+Backfill `created_by_user_id=8173041182, chat_mode='personal'` cho lịch cũ. Idempotent.
+
+### 23.6 Test checklist
+
+Đầy đủ trong `docs/team-onboarding.md` (3 bài cho member: /whoami → tạo lịch test → sửa/xoá test). File `.docx` đã upload Drive folder + share view link cho team không cần GitHub access.
+
+---
+
+## 24. Phase 3 — Bug fixes hậu deploy
+
+Sau khi deploy Phase 3 commits #1-6, em đã hot-fix 7 bug critical:
+
+| SHA | Bug | Fix |
+|---|---|---|
+| `a0aa71a` | Personal mode Yến enforce color="6" → khác màu Calendar primary cũ chị đã set | Bỏ enforce → `color_id=None` |
+| `186ba5b` | `handle_callback` chưa migrate Phase 3 → mọi click button trong group bị silent-drop | Switch `_is_allowed` → `resolve_context` + audit reject |
+| `189e768` → `8d68112` | (a) notify_* gửi tin riêng → duplicate với reply confirm; (b) Calendar API call sau create không truyền `calendar_id` → delete/edit lịch group bị treat thành "decline" thay vì xoá thật | (a) Gộp creator info vào reply, bỏ `notify_*` wiring; (b) Helper `_calendar_id_for_row` propagate calendar_id đúng cho 6 API calls |
+| `099059d` | Yến (admin) trong group enforce color="6" Tangerine → khác màu Calendar TEAM default | Chỉ enforce color cho `role=='member'` (Hương/Thuỳ); admin dùng default Calendar |
+| `adb2628` | Display name spec ban đầu "Hương"/"Thuỳ" — chị Yến muốn đầy đủ | Update USERS + signature; `migrate_display_names.py` backfill rows cũ |
+| `37d311c` | **CRITICAL privacy leak** — Hương gõ `/mylist` group → bot trả 6 lịch personal của Yến (gồm HY private). Local test với filter trả 0 rows nhưng Render trả 6 → có thể format_list legacy path bind filter sai | Bypass legacy format → render header + summary inline trong `cmd_mylist`. Add log để Render trace. Empty state explicit |
+| `1f1a7de` | Reply confirm tạo lịch group hint "/list" → Hương click bị reject (admin only) | Hint dynamic theo `req_mode`: group → `/mylist`, personal → `/list` |
+
+### 24.1 Telegram privacy mode gotcha
+
+Mặc định bot Telegram có **privacy mode ON** trong group → bot chỉ thấy:
+- Commands (`/list`, `/whoami`...)
+- Reply tới message của bot
+- @mentions tag bot
+
+Text thường (vd "Tạo lịch ...") **bot không thấy** trong group khi privacy mode ON.
+
+**Fix**: tắt qua @BotFather → kick bot + add lại để refresh permission cache.
+
+Nếu thêm member mới vào group sau khi tắt privacy → có thể vẫn cache cũ cho member đó. Re-test bằng `/whoami`. Nếu silent → kick bot ra + add lại.
+
+### 24.2 Sandbox restrictions phát hiện
+
+- Bulk `gh secret set` từ `.env` bị Claude sandbox block (credential exfiltration check) → user phải chạy local
+- Direct UPDATE Turso production khi đang debug bug bị block → write SQL script cho user paste Terminal local
+- SSH probe github.com bị block → user tự chạy `git remote set-url ... && git push`
+
+→ Pattern: viết script + commit, user chạy local. Em document vào `reference_github_actions_keep_alive.md` memory để tránh lặp lại.
+
+---
+
+## 25. Phase history (cập nhật cuối)
+
+| Phase | Date | Mô tả |
+|---|---|---|
+| 0-15 | 2026-04-21 → 2026-04-28 | Xem bảng cũ ở Section 12 + Phase 11/12/13/13.1/14/14.1/15 ở các Section trên |
+| 3.0 | 2026-04-28 | `/whoami` public command — pre-work multi-user (commit `432c4c8`) |
+| 3 (#1-6) | 2026-04-28 | Multi-user core: schema + permissions + chat_mode flow + group_notify (sau gộp vào reply) + /mylist /list_users /audit + reminder multi-target |
+| 3 hot-fixes | 2026-04-28 → 2026-04-29 | 7 bug fix sau deploy (xem Section 24) |
+| Display rename | 2026-04-29 | "Hương" → "Quỳnh Hương", "Thuỳ" → "Vũ Kim Thuỳ" + backfill |
+| Privacy fix | 2026-04-29 | `/mylist` leak fix + hint `/list` → `/mylist` trong group reply confirm |
+| Team docs | 2026-04-29 | `docs/team-onboarding.md` + `team-onboarding.docx` upload Drive + intro message gửi group |
+
+---
+
+*Cập nhật cuối: 2026-04-29 — sau Phase 3 multi-user complete + 7 hot-fixes.*
