@@ -376,6 +376,139 @@ _HELP_TEXT_PART2 = (
 )
 
 
+# Phase 3 — Team-only help (cho group "JA Scheduler Team", paste pin).
+# Loại admin commands (/list, /list_users, /audit, /members add/rm), HY mode,
+# external Calendar — chỉ giữ flow member dùng được.
+_TEAM_HELP_TEXT_PART1 = (
+    "📖 <b>JA Scheduler Bot — Hướng dẫn team (1/2)</b>\n"
+    "<i>Bot ghép Zoom + Google Calendar — phục vụ team JA Scheduler.</i>\n\n"
+
+    "📌 <b>1. LỆNH NHANH</b>\n"
+    "• " + _code("/whoami") + " — xem identity của mình\n"
+    "• " + _code("/mylist") + " — lịch của mình (xem · sửa · xoá · tìm · lọc)\n"
+    "• " + _code("/today") + " — lịch group hôm nay\n"
+    "• " + _code("/sync [id]") + " — đồng bộ sau khi kéo thả trên Calendar\n"
+    "• " + _code("/members") + " — xem sổ thành viên (gõ tên thay email lúc tạo)\n\n"
+
+    "⚠️ <b>Bot CHỈ phục vụ trong group này. KHÔNG chat 1-1 với bot.</b>\n\n"
+
+    "🆕 <b>2. TẠO LỊCH</b>\n"
+    "<i>One-time:</i>\n"
+    + _pre(
+        'Tạo lịch "Tư vấn JoyClub - Chị Lan":\n'
+        "- Thời gian: 22/4/2026 14:00\n"
+        "- Thời lượng: 30 phút\n"
+        "- Nội dung: Tư vấn gói\n"
+        "- Khách: lan@abc.com"
+    ) + "\n"
+    "<i>Recurring (hàng tuần):</i>\n"
+    + _pre(
+        'Tạo lịch "Mentor MBOs JoyClub":\n'
+        "- Thời gian: 8h30 sáng thứ 4 hàng tuần trong 12 tuần liên tiếp bắt đầu từ 6/5/2026\n"
+        "- Thời lượng: 90 phút\n"
+        "- Nội dung: Coaching MBOs\n"
+        "- Khách: Toàn"
+    ) + "\n"
+    "→ Bot parse → preview → bấm <b>✅ Xác nhận tạo</b>.\n"
+    "💡 <b>Mẹo dòng Khách:</b>\n"
+    "• Gõ tên trong sổ thay email: <code>Khách: Toàn, Hương, Oanh</code>\n"
+    "• Mời cả team: <code>Khách: /all</code>\n"
+    "• Mix tự do: <code>Khách: /all, abc@external.com</code>\n"
+    "• Trong preview: bấm <b>📋 Sửa danh sách</b> để bỏ bớt người, "
+    "<b>📇 Thêm từ sổ</b> để chọn thêm.\n\n"
+
+    "<b>Clone lịch cũ</b> (copy rồi chỉnh):\n"
+    + _pre(
+        "tạo lịch giống #5\n"
+        "tạo lịch giống #5 nhưng ngày 27/4 15h\n"
+        'tạo lịch giống "Tư vấn OKRs" nhưng ngày mai, khách Hương'
+    ) + "\n\n"
+
+    "📋 <b>3. QUẢN LÝ LỊCH — /mylist</b>\n"
+    "• " + _code("/mylist") + " hiện 10 lịch của BẠN gần nhất\n"
+    "• Mỗi lịch 1 nút số → bấm → detail → ✏️ Sửa / 🗑 Xoá\n"
+    "• Menu ✏️: 6 field — giờ/ngày · thời lượng · thêm khách · bỏ khách · tên · nội dung\n\n"
+
+    "<b>Tìm &amp; lọc &amp; phân trang</b>\n"
+    + _pre(
+        "/mylist 2                  ← trang 2\n"
+        "/mylist OKRs               ← lọc từ khoá\n"
+        "/mylist khách lan@abc.com  ← lọc theo email\n"
+        "/mylist tuần này | tuần sau | tuần trước\n"
+        "/mylist hôm nay | mai | hôm qua\n"
+        "/mylist tháng này | tháng 5\n"
+        "/mylist 27/4               ← ngày cụ thể\n"
+        "/mylist 27/4-4/5           ← khoảng ngày"
+    ) + "\n"
+    "<i>⬇️ Xem tiếp Part 2/2: Sửa nhanh · Email · Nhắc · Sync · Icons.</i>"
+)
+
+
+_TEAM_HELP_TEXT_PART2 = (
+    "📖 <b>JA Scheduler Bot — Hướng dẫn team (2/2)</b>\n\n"
+
+    "⚡ <b>4. SỬA NHANH TỪ CHAT</b> (không cần /mylist)\n\n"
+    "<b>4A. Sửa lịch mới nhất</b> — nhắn thẳng:\n"
+    + _pre(
+        "sửa giờ 15h30\n"
+        "sửa giờ 15h30 25/4/2026\n"
+        "sửa thời lượng 45 phút\n"
+        "sửa tên Tên mới\n"
+        "thêm khách Hương, b@y.vn\n"
+        "bỏ khách lan@abc.com\n"
+        "xoá lịch"
+    ) + "\n"
+
+    "<b>4B. Sửa bằng #id</b> (lấy id từ /mylist):\n"
+    + _pre(
+        "sửa giờ 15h #5\n"
+        "thêm khách Toàn #5\n"
+        "xoá lịch #5"
+    ) + "\n"
+
+    "<b>4C. Sửa bằng TÊN lịch:</b>\n"
+    + _pre(
+        'sửa giờ 15h30 "Tư vấn OKRs" ngày 25/4\n'
+        "xoá lịch khách lan@abc.com"
+    ) + "\n"
+    "⚠️ Bạn chỉ sửa/xoá được lịch chính BẠN tạo.\n\n"
+
+    "📧 <b>5. GỬI EMAIL CHO KHÁCH HAY KHÔNG</b>\n"
+    "Mỗi lần confirm sửa / xoá, bot hiện 2 nút:\n"
+    "• <b>✅ … + gửi mail</b> — Calendar gửi email update/huỷ cho khách\n"
+    "• <b>✅ … (không mail)</b> — âm thầm, khách không nhận email\n\n"
+
+    "⏰ <b>6. NHẮC LỊCH TỰ ĐỘNG</b>\n"
+    "• <b>~30 phút trước mỗi buổi</b> bot gửi nhắc vào group này, "
+    "tag người phụ trách qua @username.\n"
+    "• Tạo / sửa / xoá lịch group → bot reply có tag tên + team người tạo.\n"
+    "• Muốn không nhận noti → mute group qua Telegram.\n\n"
+
+    "📇 <b>7. SỔ THÀNH VIÊN</b>\n"
+    "Sổ có 10 người — gõ tên thay email lúc tạo lịch (đã ghi ở Part 1).\n"
+    + _code("/members") + " — xem cả sổ.\n"
+    "<i>Thêm người mới vào sổ: ping chị Yến (Admin).</i>\n\n"
+
+    "⚠️ <b>8. CẢNH BÁO TRÙNG LỊCH</b>\n"
+    "Khi tạo / clone / đổi giờ, nếu overlap với lịch khác, bot cảnh báo "
+    "trong preview. Vẫn confirm được nếu cố ý trùng.\n\n"
+
+    "🔄 <b>9. ĐỒNG BỘ SAU KHI KÉO THẢ TRÊN CALENDAR</b>\n"
+    "Kéo event trên Calendar UI → báo bot:\n"
+    "• " + _code("/sync") + " → đồng bộ lịch mới nhất\n"
+    "• " + _code("/sync 5") + " → đồng bộ lịch id=5\n"
+    "→ Bot coi Calendar là <b>nguồn đúng</b>, update Zoom + DB theo.\n\n"
+
+    "🎨 <b>10. ICON TRONG /mylist</b>\n"
+    "• 🎯 lịch one-time · 🔁 lịch recurring (hàng tuần)\n\n"
+
+    "⚠️ <b>LƯU Ý</b>\n"
+    "• Chỉ thao tác được lịch BẠN tạo (Admin có thể sửa/xoá lịch người khác).\n"
+    "• Bot luôn preview trước khi ghi thật. Gõ " + _code("huỷ") + " để bỏ trạng thái chờ.\n"
+    "• Mọi vấn đề ping chị Yến trong group."
+)
+
+
 async def _send_help(update: Update) -> None:
     """Help > 4096 chars nên chia 2 tin (Telegram sendMessage giới hạn 4096)."""
     await update.message.reply_text(
