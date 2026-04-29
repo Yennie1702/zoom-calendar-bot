@@ -2,9 +2,9 @@
 
 Chào Hương + Thuỳ 👋
 
-Bot này tên **@JA_Scheduler_bot** (chị Hải Yến đã thiết kế). Mục đích: **mời chị/bạn tạo + quản lý lịch họp Zoom + Google Calendar nhanh gọn qua chat Telegram** — không cần mở Zoom hay Calendar UI.
+Bot **@JA_Scheduler_bot** giúp team mình **tạo + quản lý lịch họp Zoom + Google Calendar nhanh gọn qua Telegram** — không cần mở Zoom hay Calendar UI.
 
-Đây là hướng dẫn để team test + dùng hàng ngày.
+Đây là hướng dẫn cho team mình.
 
 ---
 
@@ -12,38 +12,41 @@ Bot này tên **@JA_Scheduler_bot** (chị Hải Yến đã thiết kế). Mục
 
 | Việc | Trước đây | Với bot |
 |---|---|---|
-| Tạo lịch họp khách + gửi Zoom | Mở Zoom → tạo meeting → copy link → mở Calendar → tạo event → paste link → invite khách | Gõ 5 dòng vào chat → bot tự làm hết |
-| Mời khách | Gõ tay từng email | Gõ tên (`Toàn, Hương`) → bot tra sổ thay tên thành email |
-| Sửa giờ / huỷ lịch | Vào Calendar tìm event → sửa | Gõ `sửa giờ 15h #5` hoặc bấm nút |
+| Tạo lịch họp Zoom + invite khách | Mở Zoom → tạo meeting → copy link → mở Calendar → tạo event → paste link → invite từng khách | Gõ 5 dòng vào group → bot làm hết |
+| Mời khách | Gõ tay từng email (dễ sai) | Gõ tên trong sổ (`Toàn`, `Hương`...) → bot tự tra email |
+| Sửa giờ / huỷ lịch | Vào Calendar tìm event → sửa | Gõ `sửa giờ 15h #5` hoặc bấm nút trong /mylist |
 | Nhắc lịch | Calendar gửi email | Bot gửi tin Telegram 30 phút trước, có link Zoom click vào ngay |
 
-Bot chỉ phục vụ **2 chỗ**:
-- **Chat 1-1** với chị Hải Yến
-- **Group "JA Scheduler Team"** (Hương + Thuỳ + chị Yến)
+## 2. Bot chỉ phục vụ trong group "JA Scheduler Team"
+
+⚠️ **KHÔNG chat 1-1 với bot** — bot sẽ từ chối.
+
+Mọi thao tác đều thực hiện trong group **JA Scheduler Team**.
 
 ---
 
-## 2. Bước đầu tiên — gõ `/whoami` xác nhận identity
+## 3. Bước đầu tiên — gõ `/whoami` xác nhận
 
-Trong group **JA Scheduler Team**, gõ:
+Trong group, gõ:
 
 ```
 /whoami
 ```
 
-Bot phải reply với 1 message gồm:
-- 👤 User ID của bạn (số dài ~10 chữ số)
+Bot reply 1 message gồm:
+- 👤 User ID của bạn
 - 📛 Tên Telegram
 - 📍 Chat ID = `-5136308743` (group team)
-- ⏱️ Thời gian hiện tại VN
+- ⏱️ Thời gian VN
 
-Nếu bot reply OK → bạn đã được whitelist. Nếu bot không phản hồi gì → báo chị Yến để add user_id của bạn vào hệ thống.
+✅ Nếu bot reply OK → bạn đã được whitelist, sẵn sàng dùng.  
+❌ Nếu bot không phản hồi → ping chị Yến để add user_id của bạn.
 
 ---
 
-## 3. Tạo lịch họp — cú pháp chuẩn
+## 4. Tạo lịch họp — cú pháp chuẩn
 
-Gõ vào chat **JA Scheduler Team** theo format:
+Gõ trong group:
 
 ```
 Tạo lịch "Tên cuộc họp":
@@ -65,7 +68,7 @@ Lưu ý:
 1. Bot reply preview: "📋 Em hiểu lệnh như sau, chị xác nhận giúp em..."
 2. Bạn bấm **✅ Xác nhận tạo** (hoặc **❌ Huỷ**)
 3. Bot tự tạo Zoom meeting + Google Calendar event + invite khách qua email
-4. Bot báo vào group: "📅 Lịch mới được tạo bởi {tên bạn} ({team})"
+4. Bot reply: "✅ Đã tạo xong: ..." kèm link Zoom + tên người tạo
 
 ### Tạo lịch lặp hàng tuần
 
@@ -77,34 +80,30 @@ Tạo lịch "Mentor MBOs JoyClub":
 - Khách: Toàn
 ```
 
-Bot tạo 12 buổi liên tiếp với cùng 1 link Zoom (Zoom recurring meeting).
+→ Bot tạo 12 buổi với cùng 1 link Zoom (Zoom recurring meeting).
 
 ---
 
-## 4. Xem lịch — `/mylist` + `/list`
-
-| Lệnh | Hiện gì |
-|---|---|
-| `/mylist` | **Lịch chính bạn tạo** (dù là Hương, Thuỳ, hay Yến) |
-| `/list` | Tất cả lịch group (chỉ chị Yến — Admin — được dùng) |
-
-Mỗi dòng có nút số 1-10 → bấm để xem chi tiết → có nút **✏️ Sửa** / **🗑 Xoá**.
-
-### Lọc / tìm
+## 5. Xem lịch — `/mylist`
 
 ```
-/mylist tuần này        ← lịch tuần hiện tại
+/mylist                — lịch của bạn
+/mylist tuần này       — lịch tuần hiện tại
 /mylist tuần sau
-/mylist 30/4            ← ngày cụ thể
-/mylist OKRs            ← lọc từ khoá
+/mylist 30/4           — ngày cụ thể
+/mylist OKRs           — lọc từ khoá trong tên/nội dung
 /mylist khách lan@abc.com
 ```
 
+Mỗi dòng có nút số 1-10 → bấm để xem chi tiết → có nút **✏️ Sửa** / **🗑 Xoá**.
+
+⚠️ **`/mylist` chỉ hiện lịch chính bạn tạo**, không thấy lịch người khác.
+
 ---
 
-## 5. Sửa lịch — cách nhanh
+## 6. Sửa lịch — cách nhanh
 
-Gõ thẳng vào chat (không cần mở /mylist):
+Gõ thẳng trong group (không cần mở /mylist):
 
 ```
 sửa giờ 15h30 #5             ← đổi giờ lịch id=5
@@ -117,22 +116,15 @@ xoá lịch #5
 
 (Lấy `#id` từ /mylist)
 
-Hoặc qua menu:
-- /mylist → bấm số → bấm **✏️ Sửa** → chọn field → gõ giá trị mới → confirm
+Hoặc qua menu: /mylist → bấm số → bấm **✏️ Sửa** → chọn field → gõ giá trị mới → confirm.
 
-### Quyền hạn
-
-| Hành động | Member (Hương/Thuỳ) | Admin (Yến) |
-|---|---|---|
-| Tạo lịch | ✅ | ✅ |
-| Sửa/xoá lịch chính mình tạo | ✅ | ✅ |
-| Sửa/xoá lịch người khác | ❌ (bot từ chối) | ✅ |
+⚠️ **Bạn chỉ sửa/xoá được lịch chính bạn tạo.** Nếu thử thao tác lịch của người khác, bot sẽ từ chối: *"Bạn chỉ thao tác được lịch chính bạn tạo."*
 
 ---
 
-## 6. Sổ thành viên — gõ tên thay email
+## 7. Sổ thành viên — gõ tên thay email
 
-Bot có sổ tên + email sẵn 10 người trong team. Khi gõ Khách, có thể dùng:
+Bot có sổ tên + email sẵn của 10 người trong team. Khi gõ Khách, bạn có thể dùng:
 
 ```
 - Khách: Toàn, Hương, Oanh, abc@external.com
@@ -144,25 +136,76 @@ Bot tự tra sổ → resolve thành email đầy đủ.
 /members              ← xem cả 10 người trong sổ
 ```
 
-Add/sửa sổ chỉ chị Yến làm được.
+⚠️ Sổ này do **chị Yến (Admin)** thêm/sửa. Nếu bạn cần thêm 1 thành viên/đối tác mới vào sổ, ping chị Yến.
 
 ---
 
-## 7. Bot tự nhắc lịch
+## 8. Đồng bộ với Calendar UI — `/sync`
+
+Nếu bạn kéo thả event trên Google Calendar UI (đổi giờ trực tiếp trên web) → bot không tự biết. Báo bot đồng bộ:
+
+```
+/sync 5             ← đồng bộ lịch id=5
+```
+
+Bot coi Calendar là **nguồn đúng**, update Zoom + DB theo Calendar.
+
+---
+
+## 9. Bot tự nhắc lịch
 
 | Sự kiện | Bot làm gì |
 |---|---|
-| 30 phút trước mỗi lịch | Gửi 1 message vào group "⏰ Còn 30 phút đến lịch..." kèm link Zoom + người phụ trách |
-| Tạo lịch mới | "📅 Lịch mới được tạo bởi..." vào group |
-| Sửa giờ / xoá lịch | "🔄 Cập nhật" / "🗑 Xoá" vào group |
+| 30 phút trước mỗi lịch | Gửi 1 message vào group "⏰ Còn 30 phút..." kèm link Zoom + tag người phụ trách |
+| Tạo lịch mới | Reply confirm "✅ Đã tạo xong..." có tag người tạo |
+| Sửa giờ / xoá lịch | Reply có tag người sửa/xoá + diff thay đổi |
 
-→ Cả team luôn biết ai tạo gì, lúc nào, ở đâu.
+→ Cả team luôn biết ai tạo gì, lúc nào.
 
-Nếu muốn **không nhận nhắc cho 1 lịch cụ thể**, chỉ cần mute thông báo Telegram của group khi không cần.
+Nếu muốn **không nhận nhắc**, mute thông báo Telegram của group.
 
 ---
 
-## 8. Test cho team — 3 bài nhỏ
+## 10. Xem lịch hôm nay — `/today`
+
+```
+/today
+```
+
+Bot trả về digest tất cả lịch trong group hôm nay (sort theo giờ).
+
+---
+
+## 11. Cheat sheet — lệnh hay dùng
+
+```
+/whoami                — xem identity của mình
+/mylist                — lịch của mình
+/mylist tuần này       — lịch tuần này
+/today                 — lịch group hôm nay
+/members               — xem sổ thành viên
+/sync 5                — đồng bộ lịch id=5
+/help                  — hướng dẫn đầy đủ
+huỷ                    — bỏ trạng thái chờ confirm
+```
+
+### Tạo + sửa nhanh:
+
+```
+Tạo lịch "Tên":            ← format đầy đủ ở section 4
+- ...
+
+sửa giờ 15h30 #5           ← đổi giờ
+thêm khách Toàn #5         ← thêm khách
+xoá lịch #5                ← xoá
+
+Khách: /all                ← mời cả team
+Khách: Toàn, Hương         ← dùng tên thay email
+```
+
+---
+
+## 12. Test cho team — 3 bài nhỏ
 
 Mỗi người làm 3 bài này trong group **JA Scheduler Team** để verify bot hoạt động đúng:
 
@@ -174,51 +217,40 @@ Gõ `/whoami` → bot reply user_id + chat_id.
 Tạo lịch "Test bot - {tên bạn}":
 - Thời gian: 5/5/2026 10:00
 - Thời lượng: 30 phút
-- Nội dung: Test bot Phase 3
+- Nội dung: Test bot
 - Khách: lan@abc.com
 ```
-→ Preview hiện ra, bấm ✅ Xác nhận tạo.
+
+→ Preview hiện ra → bấm ✅ Xác nhận tạo.
 
 Verify:
-- Email **gmail cá nhân** của bạn (`ngoquynhhuong@john.vn` / `vukimthuy@john.vn`) nhận 1 invite từ Calendar
-- Group nhận 1 message "📅 Lịch mới được tạo bởi Hương/Thuỳ ({team})"
+- Email công ty của bạn (`ngoquynhhuong@john.vn` / `vukimthuy@john.vn`) nhận 1 invite từ Calendar
+- Bot reply confirm có tag tên bạn ({team})
 - Lịch xuất hiện trên Calendar app cá nhân của bạn
 
 ### Bài 3 — Sửa rồi xoá lịch test
-- /mylist → tìm lịch vừa tạo → bấm số → bấm ✏️ Sửa → chọn 🕐 Giờ/ngày → gõ `11:00 5/5/2026` → confirm
-- Group nhận message "🔄 Cập nhật"
+- /mylist → bấm số lịch vừa tạo → bấm ✏️ Sửa → chọn 🕐 Giờ/ngày → gõ `11:00 5/5/2026` → confirm
+- Bot reply có tag "Sửa bởi" + diff giờ
 - Sau đó bấm 🗑 Xoá → confirm
-- Group nhận message "🗑 Xoá"
+- Bot reply có tag "Xoá bởi"
+- Verify: event biến mất khỏi Calendar
 
-Khi 3 bài đều ✓ → bạn đã sẵn sàng dùng bot cho công việc thật.
+✅ 3 bài đều OK → bạn đã sẵn sàng dùng bot cho công việc thật.
 
 ---
 
-## 9. Khi gặp lỗi
+## 13. Khi gặp lỗi
 
-- Bot không phản hồi → đợi 30-60 giây (lần đầu trong ngày bot có thể "ngủ" nếu không ai dùng lâu, sẽ tự "thức" sau ping đầu).
-- Bot reply lỗi parse "Em không hiểu giờ" → kiểm tra format `dd/mm/yyyy HH:MM`.
-- Bot reply "Bạn chỉ thao tác được lịch chính mình tạo" → đó là quy tắc — gõ `/mylist` xem lịch của mình.
-- Bot reply "Chị chưa được cấp quyền dùng bot" → nhắn chị Yến.
+| Lỗi | Cách xử lý |
+|---|---|
+| Bot không phản hồi sau 30s | Đợi 1 phút (lần đầu trong ngày bot có thể "ngủ" — sẽ tự "thức") |
+| Bot reply "Em không hiểu giờ" | Kiểm tra format `dd/mm/yyyy HH:MM` |
+| Bot reply "Bạn chỉ thao tác được lịch chính bạn tạo" | Đó là quy tắc — gõ `/mylist` xem lịch của bạn |
+| Bot reply "Tên 'Linh' khớp 2 người trong sổ" | Tên trong sổ trùng nhau → gõ rõ hơn (vd "Linh A" thay vì "Linh") hoặc dùng email đầy đủ |
+| Bot reply "Em không tìm thấy 'Tên'" | Tên không có trong sổ → dùng email đầy đủ, hoặc nhờ chị Yến add vào sổ |
 
 Mọi vấn đề khác → ping chị Yến trong group.
 
 ---
 
-## 10. Một số lệnh hay dùng (cheat sheet)
-
-```
-/whoami                — xem identity của mình
-/mylist                — lịch của mình
-/mylist tuần này       — lịch tuần này
-/list                  — tất cả lịch group (Admin only)
-/today                 — lịch hôm nay
-/members               — sổ thành viên
-/help                  — hướng dẫn đầy đủ
-/sync 5                — đồng bộ lịch id=5 nếu kéo thả trên Calendar
-huỷ                    — bỏ trạng thái chờ confirm
-```
-
----
-
-*Có gì chưa rõ ping chị Yến trong group nhé. Chúc team dùng bot mượt 🚀*
+*Có gì chưa rõ ping chị Yến nhé. Chúc team dùng bot mượt 🚀*
