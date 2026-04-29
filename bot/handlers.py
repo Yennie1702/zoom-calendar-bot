@@ -2207,7 +2207,15 @@ def _occurrence_keyboard(
 
 # ── Callback router ────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update):
+    # Phase 3: gate qua resolve_context (chat_mode aware) thay vì _is_allowed
+    # cũ (chỉ check ALLOWED_CHAT_ID = personal). Bug: mọi click button trong
+    # group bị silent-drop trước khi fix này.
+    _log_incoming(update)
+    perm_ctx = resolve_context(update)
+    if perm_ctx.mode == "reject":
+        # Silent — không pollute chat lạ. audit để chị Yến /audit thấy probe.
+        audit(perm_ctx, "callback", result="reject",
+              error_message=perm_ctx.reject_message)
         return
     query = update.callback_query
     await query.answer()
