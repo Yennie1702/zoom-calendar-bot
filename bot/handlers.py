@@ -806,13 +806,33 @@ async def cmd_mylist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     raw_args = " ".join(ctx.args or []).strip() if hasattr(ctx, "args") else ""
     if not raw_args:
+        log.info(
+            "mylist call: user=%s name=%s mode=%s — filtering by owner+mode",
+            req.user_id, req.display_name, req.mode,
+        )
         rows = db.list_recent(
             limit=10,
             chat_mode=req.mode,
             created_by_user_id=req.user_id,
         )
-        text = formatter.format_list(rows)
-        markup = _list_keyboard(rows)
+        log.info("mylist returned %d rows for user=%s", len(rows), req.user_id)
+        # Header rõ ràng — phân biệt /mylist (của bạn) vs /list (admin xem all)
+        if rows:
+            header = (
+                f"📋 *Lịch của {req.display_name}* "
+                f"(chế độ {req.mode}, {len(rows)} lịch):\n"
+            )
+            from bot.formatter import format_event_summary
+            lines = [header]
+            for i, r in enumerate(rows, 1):
+                lines.append(f"{i}. {format_event_summary(r)}")
+            text = "\n".join(lines)
+        else:
+            text = (
+                f"📭 *{req.display_name}* chưa tạo lịch nào "
+                f"trong chế độ *{req.mode}*."
+            )
+        markup = _list_keyboard(rows) if rows else None
         ctx.chat_data.pop("list_query", None)
         ctx.chat_data["request_mode"] = req.mode
         ctx.chat_data["request_user_id"] = req.user_id
