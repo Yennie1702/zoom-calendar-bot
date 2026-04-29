@@ -89,12 +89,19 @@ class ZoomClient:
             "timezone": config.TIMEZONE,
             "agenda": agenda,
             "settings": {
-                "join_before_host": False,
-                "waiting_room": True,
+                # Khách join trước 15 phút mà KHÔNG cần host start
+                "join_before_host": True,
+                "jbh_time": 15,                # 0=anytime / 5 / 10 / 15
+                # Khách auto vào, KHÔNG cần host admit
+                "waiting_room": False,
+                "approval_type": 2,            # 2=No registration required
+                # Mute mặc định khi vào (chị Yến set sẵn từ Phase 1, giữ nguyên)
                 "mute_upon_entry": True,
-                "approval_type": 2,
                 "audio": "both",
-                "auto_recording": "none",
+                # Auto record lên Zoom Cloud — settings format (speaker/gallery/
+                # shared screen/audio only/transcript/chat) bật ở Zoom UI
+                # account-level Settings → Recording → Cloud Recording.
+                "auto_recording": "cloud",
             },
         }
         if recurrence:
