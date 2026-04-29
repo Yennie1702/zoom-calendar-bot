@@ -2889,8 +2889,12 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 creator_signature=creator_cfg.signature,
             )
         else:
+            # Personal mode: giữ behavior cũ — KHÔNG enforce colorId, để
+            # Calendar dùng màu default của calendar (chị Yến đã set sẵn
+            # màu cam trên Calendar primary). Group mode mới override color
+            # theo USERS để phân biệt người tạo.
             target_cal = None  # primary
-            target_color = creator_cfg.calendar_color if creator_cfg else None
+            target_color = None  # default calendar color
             title_prefix = (creator_cfg.title_prefix if creator_cfg
                             else "[John Academy] ")
             final_attendees = list(cmd.attendees)
