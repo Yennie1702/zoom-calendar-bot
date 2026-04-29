@@ -2736,18 +2736,42 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             try:
                 _apply_drift_sync(row, pending["diffs"])
                 updated = db.get_event(event_id)
-                # Phase 3 — notify group nếu group mode + có thay đổi quan trọng
-                try:
-                    group_notify.notify_sync(
-                        updated or row,
-                        actor_display_name=sync_perm.display_name,
-                        actor_user_id=sync_perm.user_id,
-                        diffs=pending["diffs"],
+                # Phase 3 — group mode: gộp actor + diff Calendar→DB vào
+                # reply (skip notify_sync riêng để tránh duplicate).
+                actor_block = ""
+                row_mode = (updated or row).chat_mode or "personal"
+                diffs = pending.get("diffs", {})
+                notify_keys = {"start", "duration", "topic", "attendees"}
+                if row_mode == "group" and (set(diffs) & notify_keys):
+                    actor_cfg = get_user(sync_perm.user_id)
+                    team_str = f" ({actor_cfg.team})" if actor_cfg else ""
+                    diff_lines = []
+                    if "start" in diffs:
+                        diff_lines.append(
+                            f"  • Giờ: {diffs['start'][0]} → {diffs['start'][1]}"
+                        )
+                    if "duration" in diffs:
+                        diff_lines.append(
+                            f"  • Thời lượng: {diffs['duration'][0]}p → {diffs['duration'][1]}p"
+                        )
+                    if "topic" in diffs:
+                        diff_lines.append(
+                            f"  • Tên: {diffs['topic'][0]} → {diffs['topic'][1]}"
+                        )
+                    if "attendees" in diffs:
+                        old_a = diffs['attendees'][0]
+                        new_a = diffs['attendees'][1]
+                        diff_lines.append(
+                            f"  • Khách: {len(old_a)} → {len(new_a)} người"
+                        )
+                    actor_block = (
+                        f"👤 *Sửa bởi:* {sync_perm.display_name}{team_str}\n"
+                        f"🔄 Thay đổi (Calendar → Bot + Zoom):\n"
+                        + "\n".join(diff_lines) + "\n"
                     )
-                except Exception:
-                    log.exception("notify_sync failed (non-fatal)")
                 await query.edit_message_text(
-                    "✅ Đã đồng bộ.\n\n" + formatter.format_event_detail(updated),
+                    f"✅ Đã đồng bộ.\n{actor_block}\n"
+                    + formatter.format_event_detail(updated),
                     reply_markup=_detail_keyboard(event_id),
                     parse_mode=ParseMode.MARKDOWN,
                     disable_web_page_preview=True,
@@ -2940,13 +2964,6 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             chat_mode=req_mode,
         )
         ctx.chat_data["last_created_id"] = event_id
-        # Phase 3 — notify group khi mode='group' (no-op nếu personal)
-        try:
-            new_row = db.get_event(event_id)
-            if new_row:
-                group_notify.notify_create(new_row)
-        except Exception:
-            log.exception("notify_create failed (non-fatal)")
         reply = formatter.format_success_reply(
             cmd=cmd,
             zoom_join_url=zoom.join_url,
@@ -2954,6 +2971,14 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             zoom_passcode=zoom.passcode,
             calendar_event_link=event.html_link,
         )
+        # Phase 3 — group mode: gộp creator info vào reply (thay cho
+        # notify_create riêng → tránh duplicate trong group).
+        if req_mode == "group":
+            team_str = f" ({creator_cfg.team})" if creator_cfg else ""
+            creator_line = f"👤 *Người tạo:* {req_display}{team_str}\n"
+            # Inject sau dòng đầu "✅ Đã tạo xong: *Title*"
+            head, _, rest = reply.partition("\n")
+            reply = f"{head}\n{creator_line}{rest}"
         await query.edit_message_text(
             reply + f"\n\n🆔 *DB id:* `{event_id}` — gõ /list để sửa/xoá.",
             parse_mode=ParseMode.MARKDOWN,
@@ -3091,14 +3116,23 @@ async def _do_edit(
             _apply_edit(row, field, new_value, notify=notify)
         ctx.chat_data.pop("pending_edit", None)
         updated = db.get_event(event_id)
-        # Phase 3 — notify group cho field quan trọng (skip 'ag' = nội dung)
-        try:
-            if updated and field != "ag":
-                _notify_edit_group(row, updated, field, perm_ctx)
-        except Exception:
-            log.exception("notify_edit failed (non-fatal)")
+        # Phase 3 — group mode: gộp actor + diff vào reply (skip field='ag' =
+        # nội dung agenda — Q1.A spec). Personal mode: reply như cũ.
+        actor_diff_block = ""
+        row_mode = (row.chat_mode or "personal") if row else "personal"
+        if row_mode == "group" and field != "ag" and updated:
+            actor_team = ""
+            actor_cfg = get_user(perm_ctx.user_id) if perm_ctx else None
+            if actor_cfg:
+                actor_team = f" ({actor_cfg.team})"
+            diff_str = _format_field_diff(row, updated, field)
+            actor_diff_block = (
+                f"👤 *Sửa bởi:* {perm_ctx.display_name}{actor_team}\n"
+                f"{diff_str}\n"
+            )
         await query.edit_message_text(
-            f"✅ Đã cập nhật. {mail_note}\n\n" + formatter.format_event_detail(updated),
+            f"✅ Đã cập nhật. {mail_note}\n{actor_diff_block}\n"
+            + formatter.format_event_detail(updated),
             reply_markup=_detail_keyboard(event_id),
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
@@ -3110,11 +3144,10 @@ async def _do_edit(
         )
 
 
-def _notify_edit_group(
-    old_row: db.EventRow, new_row: db.EventRow,
-    field: str, perm_ctx: RequestContext,
-) -> None:
-    """Helper: render diff cho group_notify.notify_edit (Phase 3)."""
+def _format_field_diff(
+    old_row: db.EventRow, new_row: db.EventRow, field: str,
+) -> str:
+    """Helper Phase 3: render 1 dòng diff "✏️ Field: old → new" cho group reply."""
     label_map = {
         "time": "🕐 Giờ/ngày",
         "dur": "⏱ Thời lượng",
@@ -3124,7 +3157,7 @@ def _notify_edit_group(
     }
     label = label_map.get(field)
     if label is None:
-        return  # ag (agenda) → caller đã filter, không tới đây
+        return ""
     if field == "time":
         old_v = old_row.start_dt.strftime("%H:%M %d/%m/%Y")
         new_v = new_row.start_dt.strftime("%H:%M %d/%m/%Y")
@@ -3138,15 +3171,8 @@ def _notify_edit_group(
         old_v = f"{len(old_row.attendees)} người"
         new_v = f"{len(new_row.attendees)} người"
     else:
-        return
-    group_notify.notify_edit(
-        new_row,
-        actor_display_name=perm_ctx.display_name,
-        actor_user_id=perm_ctx.user_id,
-        field_label=label,
-        old_value=old_v,
-        new_value=new_v,
-    )
+        return ""
+    return f"✏️ {label}: {old_v} → {new_v}"
 
 
 def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True) -> None:
@@ -3266,17 +3292,22 @@ async def _do_delete(query, event_id: int, *, notify: bool = True,
     except Exception:
         log.exception("Calendar delete failed (soft-continuing)")
     db.mark_deleted(event_id)
-    # Phase 3 — notify group khi mode='group' (no-op nếu personal)
-    try:
-        actor_name = perm_ctx.display_name if perm_ctx else "?"
-        actor_uid = perm_ctx.user_id if perm_ctx else None
-        group_notify.notify_delete(
-            row, actor_display_name=actor_name, actor_user_id=actor_uid,
+    # Phase 3 — group mode: gộp actor + thời gian (đã xoá) vào reply.
+    actor_block = ""
+    if (row.chat_mode or "personal") == "group" and perm_ctx is not None:
+        actor_cfg = get_user(perm_ctx.user_id)
+        team_str = f" ({actor_cfg.team})" if actor_cfg else ""
+        time_str = (
+            f"{row.start_dt.strftime('%H:%M %d/%m/%Y')} "
+            f"({row.duration_min} phút)"
         )
-    except Exception:
-        log.exception("notify_delete failed (non-fatal)")
+        actor_block = (
+            f"\n👤 *Xoá bởi:* {perm_ctx.display_name}{team_str}\n"
+            f"⏰ Thời gian: {time_str}"
+        )
     await query.edit_message_text(
-        f"🗑 Đã xoá lịch *{row.topic}* (id={event_id}). {mail_note}",
+        f"🗑 Đã xoá lịch *{row.topic}* (id={event_id}). {mail_note}"
+        + actor_block,
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("↩️ Quay lại list", callback_data="back_list")]]
         ),
