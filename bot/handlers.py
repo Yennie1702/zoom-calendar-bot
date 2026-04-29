@@ -2141,10 +2141,13 @@ async def _handle_quick_edit(
     """
     candidates = _resolve_targets(ctx, target)
     if not candidates:
+        # Phase 3 — group hint /mylist (member không dùng được /list)
+        mode = ctx.chat_data.get("request_mode", "personal")
+        list_cmd = "/mylist" if mode == "group" else "/list"
         await update.message.reply_text(
             "⚠️ Không tìm thấy lịch khớp. "
             "Thử `#id` (VD `sửa giờ 15h #3`), thêm `\"tên lịch\"` hoặc `ngày DD/MM`, "
-            "hoặc gõ /list để xem lại."
+            f"hoặc gõ {list_cmd} để xem lại."
         )
         return
     if len(candidates) > 1:
@@ -3142,8 +3145,10 @@ async def _do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             # Inject sau dòng đầu "✅ Đã tạo xong: *Title*"
             head, _, rest = reply.partition("\n")
             reply = f"{head}\n{creator_line}{rest}"
+        # Phase 3 — group hint /mylist (vì /list admin only); personal /list
+        list_cmd = "/mylist" if req_mode == "group" else "/list"
         await query.edit_message_text(
-            reply + f"\n\n🆔 *DB id:* `{event_id}` — gõ /list để sửa/xoá.",
+            reply + f"\n\n🆔 *DB id:* `{event_id}` — gõ {list_cmd} để sửa/xoá.",
             parse_mode=ParseMode.MARKDOWN,
             disable_web_page_preview=True,
         )
