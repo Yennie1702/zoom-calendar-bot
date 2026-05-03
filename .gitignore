@@ -24,6 +24,14 @@ logs/
 *.log
 
 # SQLite data (chứa email khách + zoom passcode — tuyệt đối không leak lên Git)
+data/events.db
+data/events.db-*
+data/backups/
+data/memory_backups/
+
+# Phase 3 — sensitive config (members + USERS — chỉ trong env hoặc Turso)
+data/members.json
+!data/members.example.json
 
 # IDE
 .vscode/

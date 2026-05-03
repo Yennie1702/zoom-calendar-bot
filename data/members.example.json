@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "_comment": "Template file. Production: dữ liệu lưu Turso table `members`. Local dev: copy file này thành data/members.json (gitignored) và edit cho team mình.",
+  "members": [
+    {
+      "name": "Tên hiển thị",
+      "email": "user@company.com",
+      "title": "Chức danh (optional)"
+    }
+  ]
+}
