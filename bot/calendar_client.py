@@ -70,10 +70,13 @@ class CalendarClient:
             "end": {"dateTime": end_local_iso, "timeZone": config.TIMEZONE},
             "attendees": [{"email": e} for e in attendee_emails],
             "reminders": {
+                # Tắt EMAIL reminder của Calendar — bot Telegram đã gửi nhắc 30p.
+                # Giữ popup-only để khách thấy nhắc trên Calendar app cá nhân
+                # (notification bell, không phải Gmail).
                 "useDefault": False,
                 "overrides": [
-                    {"method": "popup", "minutes": 1440},  # 1 day
-                    {"method": "email", "minutes": 30},
+                    {"method": "popup", "minutes": 1440},  # 1 ngày trước
+                    {"method": "popup", "minutes": 30},    # 30 phút trước
                 ],
             },
         }
