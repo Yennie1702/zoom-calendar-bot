@@ -125,8 +125,12 @@ def _format_group_reminder(row: db.EventRow, occ_iso: str) -> str:
 
 def main() -> int:
     now = scheduler._now_vn()
-    LEAD_MIN = scheduler.REMINDER_LEAD_MIN
-    HALF_WIN = max(scheduler.REMINDER_HALF_WINDOW_MIN, 5)
+    # Phương án F (2026-05-02): cron workflow đổi sang */15 → window mở rộng
+    # ±10 phút (20-40p trước event, 20 phút wide) để 1 run thường rơi trúng
+    # window. Trade-off: đôi khi nhắc 20p hoặc 40p trước thay vì đúng 30p,
+    # nhưng đảm bảo KHÔNG miss event (vì cron jitter có thể skip 1 run = 15p).
+    LEAD_MIN = scheduler.REMINDER_LEAD_MIN  # 30
+    HALF_WIN = max(scheduler.REMINDER_HALF_WINDOW_MIN, 10)  # ≥ 10 phút each side
 
     lower = now + timedelta(minutes=LEAD_MIN - HALF_WIN)
     upper = now + timedelta(minutes=LEAD_MIN + HALF_WIN)

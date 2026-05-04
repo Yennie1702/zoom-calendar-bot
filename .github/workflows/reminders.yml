@@ -1,11 +1,15 @@
 name: Reminders 30p trước event
 
-# Chạy mỗi 5 phút. Window 28-32p (default) → 4 phút wide. Cron trễ 5-15 phút
-# nên window mở rộng 25-35p (10 phút wide) trong script trigger_reminders.py
-# để cover jitter.
+# Phương án F (2026-05-02 cuối ngày): cron */15 thay */5.
+# Lý do: GitHub Actions cron */5 jitter quá lớn (1-6h) ngay cả public repo —
+# best-effort priority. Cron */15 (4 lần/giờ) ổn định hơn vì tổng load thấp,
+# GitHub priority cao hơn cho ít runs.
+# Window mở rộng 20-40p (20 phút wide) trong trigger_reminders.py để 1 run
+# thường rơi trúng window; chấp nhận trade-off "đôi khi nhắc 20 hoặc 40 phút
+# trước thay vì đúng 30p" để có reliability.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:
