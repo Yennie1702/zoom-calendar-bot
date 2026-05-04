@@ -6,9 +6,14 @@
 
 ## 🎯 TL;DR — Trạng thái hiện tại
 
-Bot deployed Render Free, hoạt động 24/7. Phase 3 multi-user hoàn tất. **Còn 1 vấn đề blocker và 3 setup pending chị Yến phải làm.**
+Bot deployed Render Free, hoạt động 24/7. Phase 3 multi-user hoàn tất. **Còn 1 vấn đề blocker, 3 setup pending chị Yến, và 2 bug timing chưa fix.**
 
-**Latest commit**: `9cad917` — Calendar bỏ email reminder, chỉ popup.
+**Latest commit**: `176f2ec` — handoff doc + design Section 26.
+
+**Spec reminder/digest cuối (clarify 2026-05-02 từ chị Yến)** — xem chi tiết Bug 3:
+- Personal chat 1-1: ✅ reminder 30p (bot + Calendar) + ✅ HY Meet + ✅ digest 7h sáng
+- Group team: ✅ reminder 30p (mọi lịch ai tạo cũng nhắc) — ❌ KHÔNG digest
+- Email reminder Gmail "Lịch Google: Thông báo..." → ĐÃ FIX commit `9cad917` (Calendar popup-only). Lịch cũ vẫn còn email 1 lần cuối.
 
 ```
 git log --oneline -10
@@ -91,14 +96,33 @@ Tin intro `message_id=465` em gửi vào group có link Drive `.docx`. Chị Y�
 
 **Fix**: cùng convert public (Phương án C) sẽ fix.
 
-### Bug 3 (clarify từ chị 2026-05-02)
+### Bug 3 (clarify từ chị 2026-05-02) — IMPORTANT
 
-Spec đúng:
-- Personal mode (chat 1-1 chị Yến): reminder 30p + digest 7h sáng
-- Group mode (team): **chỉ reminder 30p** (KHÔNG digest)
-- Group reminder: nhắc lịch của bất kỳ ai trong team tạo (không filter owner)
+Chị Yến clarify spec (chốt cuối):
 
-Code hiện tại đã correct cho spec này. Workflow `daily-digest.yml` chỉ gửi vào `OWNER_USER_ID` (chị Yến personal) → không spam group. Đúng.
+**3 tính năng — chỉ áp dụng cho Personal mode (chat 1-1 chị Yến):**
+- ✅ Reminder ~30 phút trước mỗi buổi (cả lịch bot tạo + lịch Calendar không do bot tạo)
+- ✅ Lịch HY: reminder hiện 🔗 Google Meet thay vì Zoom
+- ✅ 07:00 sáng: digest toàn bộ lịch trong ngày (sort theo giờ, icon 🎯/🔁/📅/🔒)
+
+**Group mode — CHỈ áp dụng:**
+- ✅ Reminder 30 phút trước event (nhắc TẤT CẢ lịch mọi người trong team tạo, không filter chỉ lịch của caller)
+- ❌ KHÔNG có digest 7h sáng (Yến không muốn spam group)
+
+**Bonus phát hiện chị Yến 2026-05-02**: reminder 30p **được gửi qua email Gmail** (subject "Lịch Google: Thông báo: [HY] FIT - Hẹn..." lúc 08:29) — KHÔNG phải bot Telegram.
+
+→ Nguyên nhân: Calendar event em set `reminders.overrides = [popup 1day, email 30min]` lúc tạo event. Calendar tự gửi email 30p trước → spam Gmail chị.
+
+→ Fix `9cad917` (đã commit + push): thay `email` override bằng `popup` → Calendar chỉ notification bell, không spam Gmail. Bot Telegram vẫn lo phần nhắc qua chat.
+
+→ **Lịch CŨ vẫn email** vì Calendar API không bulk-update reminders retroactive. Chị Yến edit/sync từng cái mới apply. Hoặc accept lịch cũ chạy email 1 lần cuối.
+
+Code hiện tại đã correct cho spec này:
+- `trigger_reminders.py` route theo `chat_mode`: group → GROUP_CHAT_ID, personal → OWNER_USER_ID
+- `trigger_digest.py` chỉ gửi vào `OWNER_USER_ID` → không spam group ✓
+- Format reminder cho HY (`provider='meet'`) hiển thị Meet link thay Zoom (Phase 7) ✓
+
+**Vẫn pending**: Telegram reminder không fire (bug 1) + digest fire chiều (bug 2) — chờ Phương án C.
 
 ---
 
