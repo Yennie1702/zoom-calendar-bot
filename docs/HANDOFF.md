@@ -4,16 +4,27 @@
 
 ---
 
-## 🎯 TL;DR — Trạng thái hiện tại
+## 🎯 TL;DR — Trạng thái hiện tại (2026-05-02 cuối ngày)
 
-Bot deployed Render Free, hoạt động 24/7. Phase 3 multi-user hoàn tất. **Còn 1 vấn đề blocker, 3 setup pending chị Yến, và 2 bug timing chưa fix.**
+Bot deployed Render Free, hoạt động 24/7. Phase 3 multi-user hoàn tất. **Repo đã public + env đã set đủ. Đang monitor reminder/digest timing fix.**
 
-**Latest commit**: `176f2ec` — handoff doc + design Section 26.
+**Latest commit**: pending push (HANDOFF update).
+
+**Đã làm xong** Phương án C:
+- ✅ Refactor `bot/users_config.py` load USERS từ env (commit `1437b58`)
+- ✅ Gitignore `data/members.json` (Turso production + local dev)
+- ✅ Render env `USERS_CONFIG_JSON` set xong — bot active với 3 users (Yến/Hương/Thuỳ)
+- ✅ Audit git history: clean (không có token leaked)
+- ✅ Convert repo public — `gh repo edit ... --visibility public`
 
 **Spec reminder/digest cuối (clarify 2026-05-02 từ chị Yến)** — xem chi tiết Bug 3:
 - Personal chat 1-1: ✅ reminder 30p (bot + Calendar) + ✅ HY Meet + ✅ digest 7h sáng
 - Group team: ✅ reminder 30p (mọi lịch ai tạo cũng nhắc) — ❌ KHÔNG digest
 - Email reminder Gmail "Lịch Google: Thông báo..." → ĐÃ FIX commit `9cad917` (Calendar popup-only). Lịch cũ vẫn còn email 1 lần cuối.
+
+**Pending verify (1-2 ngày sau)**:
+- Reminder 30p có fire đúng không?
+- Digest 7h sáng có đến đúng giờ không?
 
 ```
 git log --oneline -10
@@ -26,15 +37,16 @@ fb2c7be Zoom defaults: join_before_host 15p, no waiting room, auto cloud record
 
 ---
 
-## ⚠️ BLOCKER ngay đầu session
+## ✅ Env Phase 3 đã set đủ (2026-05-02)
 
-**Render env `USERS_CONFIG_JSON` CHƯA SET** → khi Render rebuild commit `1437b58`+, code mới load USERS từ env. Nếu env trống → `USERS = {}` → **bot reject Hương + Thuỳ trong group "JA Scheduler Team"**.
+5/5 env vars đã set trên Render dashboard:
+- `TELEGRAM_OWNER_USER_ID` = `8173041182`
+- `TELEGRAM_GROUP_CHAT_ID` = `-5136308743`
+- `GOOGLE_CALENDAR_PERSONAL_ID` = `primary`
+- `GOOGLE_CALENDAR_TEAM_ID` = `c_85a9e82f...@group.calendar.google.com`
+- **`USERS_CONFIG_JSON`** = JSON 3 users ✅ chị Yến đã set xong
 
-### Action đầu session
-
-1. Hỏi chị Yến: "Chị đã set `USERS_CONFIG_JSON` trên Render chưa?"
-2. Nếu chưa → đưa lại JSON value ở section "Render env mới phải set" dưới
-3. Nếu đã set rồi → verify Hương gõ `/whoami` trong group bot reply OK với tên "Quỳnh Hương"
+Bot đang chạy với code mới. Verify: audit log có entry `/list Hải Yến → success` lúc 09:50 UTC = 16:50 VN ngày 2/5.
 
 ---
 
@@ -53,22 +65,22 @@ Mở Render dashboard → service `ja-scheduler-bot` → tab **Environment** →
 
 → Save → Render auto restart ~30s.
 
-### 2. Quyết định Convert repo public hay không
+### 2. ✅ Convert repo public — DONE (2026-05-02)
 
-Vấn đề: GitHub Actions cron `*/5` private repo có jitter 1-6h → reminder + digest không fire đúng giờ.
-
-**Phương án C đã chốt** (chị Yến chọn 2026-05-02): refactor sensitive data ra env → convert repo public → cron precision <1 phút.
-
-**Code đã ready** (commit `1437b58`):
-- `bot/users_config.py` load USERS từ env
+Phương án C completed:
+- `bot/users_config.py` load USERS từ env (commit `1437b58`)
 - `data/members.json` gitignored, fallback Turso
-- `data/members.example.json` template committed
+- Audit git history: clean (không có token/secret thật)
+- `gh repo edit Yennie1702/zoom-calendar-bot --visibility public --accept-visibility-change-consequences` ✓
+- Repo verify: `visibility: public, private: false` ✓
 
-**Chưa làm**:
-- Audit git history sensitive (lịch sử có email — accept hay rewrite history?)
-- Convert public via `gh repo edit Yennie1702/zoom-calendar-bot --visibility public`
+**Sensitive data trong git history** (accept — work emails + Telegram user_id):
+- `data/members.json` (committed Phase 11) — 10 email team
+- `bot/users_config.py` versions cũ — 3 user_id Telegram + email + tên
 
-→ Sau khi chị set env xong + verify bot work, hỏi chị: "Em convert repo public ngay không?".
+→ Email là work emails đã dùng làm contact công khai trong company. user_id Telegram không phải password (chỉ là số định danh). Trade-off chấp nhận để có cron precision <1 phút.
+
+**Next**: monitor reminder/digest cron timing 1-2 ngày để confirm fix triệt để.
 
 ### 3. Tin pin trong group (optional)
 
@@ -78,23 +90,27 @@ Tin intro `message_id=465` em gửi vào group có link Drive `.docx`. Chị Y�
 
 ## 📋 Bug đã biết — chưa fix
 
-### Bug 1: Reminder 30p Telegram KHÔNG fire (BLOCKER)
+### Bug 1: Reminder 30p Telegram KHÔNG fire — EXPECTED FIXED (2026-05-02)
 
-**Triệu chứng**: chị Yến phản ánh không nhận tin Telegram 30p trước event 9h sáng. DB `external_reminders_sent` 0 entries hôm nay; `events.reminders_sent` toàn `[]`.
+**Triệu chứng cũ**: chị Yến phản ánh không nhận tin Telegram 30p trước event 9h sáng. DB `external_reminders_sent` 0 entries; `events.reminders_sent` toàn `[]`.
 
 **Root cause**: GitHub Actions cron `*/5` thực tế chỉ chạy 3-6 lần/ngày (jitter free tier private repo) → window 25-35p miss.
 
-**Fix dự kiến**: Phương án C (convert public) sẽ fix triệt để. Em đã refactor code, chờ chị set env + OK convert.
+**Fix**: Repo convert public (Phương án C, 2026-05-02). Cron public repo precision <1 phút thay vì 1-6h. **Cần monitor 1-2 ngày để confirm fix triệt để.**
 
-### Bug 2: Digest 7h sáng → fire vào chiều
+→ Verify lần tới: kiểm tra `external_reminders_sent` + `events.reminders_sent` có entries cho lịch hôm sau không. Nếu vẫn rỗng → debug tiếp.
 
-**Triệu chứng**: chị nhận digest lúc 13-15h thay vì 7h sáng.
+### Bug 2: Digest 7h sáng → fire vào chiều — EXPECTED FIXED (2026-05-02)
+
+**Triệu chứng cũ**: chị nhận digest lúc 13-15h thay vì 7h sáng.
 
 **Root cause**: 2 nguyên nhân chồng:
 1. GitHub Actions cron `0 0 * * *` private delay 6-7h
 2. Render Free sleep — internal scheduler wake bất kỳ lúc nào trong window 7-18h
 
-**Fix**: cùng convert public (Phương án C) sẽ fix.
+**Fix**: Repo public → cron `0 0 * * *` precision tốt hơn. Render bot internal scheduler vẫn có thể wake muộn nhưng workflow public sẽ catch lúc 7h, set `last_digest_date` → bot internal skip → digest đến chị Yến lúc 7h.
+
+→ Verify sáng mai (3/5): chị nhận digest ~7h sáng VN.
 
 ### Bug 3 (clarify từ chị 2026-05-02) — IMPORTANT
 
