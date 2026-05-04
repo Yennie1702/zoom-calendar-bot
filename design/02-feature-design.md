@@ -31,6 +31,8 @@
 22. [Phase 3 — `/mylist` + `/list_users` + `/audit`](#22-phase-3--mylist--list_users--audit)
 23. [Phase 3 — Setup checklist (Render + GH + Drive)](#23-phase-3--setup-checklist-render--gh--drive)
 24. [Phase 3 — Bug fixes hậu deploy](#24-phase-3--bug-fixes-hậu-deploy)
+25. [Phase 3 — Phase history cuối cùng](#25-phase-history-cập-nhật-cuối)
+26. [Hot-fixes + improvements 29/4 → 2/5](#26-hot-fixes--improvements-294--25)
 
 ---
 
@@ -1700,3 +1702,129 @@ Nếu thêm member mới vào group sau khi tắt privacy → có thể vẫn ca
 ---
 
 *Cập nhật cuối: 2026-04-29 — sau Phase 3 multi-user complete + 7 hot-fixes.*
+
+---
+
+## 26. Hot-fixes + improvements 29/4 → 2/5
+
+### 26.1 Display name update (29/4)
+
+Chị Yến yêu cầu đổi tên hiển thị:
+- "Hương" → "Quỳnh Hương"
+- "Thuỳ" → "Vũ Kim Thuỳ"
+
+`scripts/migrate_display_names.py` backfill `events.created_by_display_name` + `audit_log.display_name` cho rows cũ. Idempotent.
+
+Áp dụng cho mọi nơi gọi `UserConfig.display_name` + `signature`:
+- Reply confirm "Người tạo: ..."
+- Calendar event description signature
+- Reminder mention "Người phụ trách: ..."
+- `/list_users` output
+
+### 26.2 Privacy bug fix (29/4 — commit `37d311c`)
+
+**Triệu chứng**: Hương gõ `/mylist` trong group → bot trả 6 lịch personal của Yến (gồm HY private "FIT - Hẹn Chị Doan Trang đi tập"). LEAK PRIVACY nghiêm trọng.
+
+**Audit log confirm**: Hương = group mode, user_id=8699500614. Local test với filter `chat_mode='group' AND created_by_user_id=8699500614` trả 0 rows đúng. Nhưng bot Render trả 6 rows = hành vi của filter NONE.
+
+**Root cause**: Render đang dùng `format_list` legacy path mà filter chat_mode/owner không bind đúng vào WHERE clause khi gọi qua param positional implicit.
+
+**Fix**:
+- Bypass legacy `format_list` path. Render header + summary inline trong `cmd_mylist` với prefix "Lịch của {display_name} (chế độ X)".
+- Empty state explicit: "{display_name} chưa tạo lịch nào trong chế độ X".
+- Add log "mylist call: user=X mode=Y" để Render logs có thể trace.
+
+### 26.3 /list → /mylist hint dynamic (29/4 → 30/4)
+
+8 chỗ reply text trong handlers.py hardcode `/list`. Trong group mode member click bị reject (admin only). Helper `_list_cmd_for(ctx.chat_data)` trả `/mylist` cho group, `/list` cho personal — wire vào tất cả reply user-facing.
+
+### 26.4 Zoom defaults (2/5 — commit `fb2c7be`)
+
+Chị Yến phản ánh link Zoom bot tạo không có settings như chị set thủ công. Update 3 default settings trong `create_meeting`:
+
+| Setting | Trước | Sau |
+|---|---|---|
+| `join_before_host` | False | **True** |
+| `jbh_time` | — | **15** (phút trước event) |
+| `waiting_room` | True | **False** (auto vào, không cần admit) |
+| `auto_recording` | "none" | **"cloud"** |
+
+**Note**: cloud recording **format** (speaker view, gallery view, share screen, audio only, transcript, chat) là **account-level setting** trong Zoom UI Settings → Recording → Cloud Recording. Bot không thể set per-meeting qua API. Chị Yến đã tick các options ở UI 1 lần — áp dụng cho mọi meeting bot tạo.
+
+Settings áp dụng cho meeting MỚI tạo. Meeting CŨ giữ settings tại lúc tạo (Zoom không bulk-update retroactive).
+
+### 26.5 Refactor sang env-based config (2/5 — commit `1437b58`)
+
+**Vấn đề cần giải**: GitHub Actions cron `*/5` private repo có jitter 1-6h. Public repo không jitter (<1 phút precision).
+
+**Trước khi convert public**: cần ẩn sensitive data khỏi repo.
+
+| File | Trước | Sau |
+|---|---|---|
+| `bot/users_config.py` | Hardcoded USERS dict (3 user_id + email + tên) | Load từ env `USERS_CONFIG_JSON` |
+| `data/members.json` | Committed (10 email team) | Untracked (gitignored) — chỉ Turso prod + local dev |
+| Phase 3 env vars | Render only | + `.env.example` documented |
+
+**Defensive parsing** trong `users_config._load_users()`:
+- Empty/unset env → `USERS = {}` (group reject mọi user)
+- Malformed JSON → log warn, return empty
+- Partial entry → skip entry với log, không crash
+
+**Setup mới**: chị Yến phải set Render env `USERS_CONFIG_JSON` 1 dòng JSON 3 users. Sau đó Render restart auto load.
+
+**Convert public**: chưa thực hiện — chờ chị verify env set xong + verify bot work.
+
+### 26.6 Calendar email reminder bỏ (2/5 — commit `9cad917`)
+
+Chị Yến phản ánh nhận email "Lịch Google: Thông báo: [HY] FIT..." từ Gmail — đây là Calendar default email reminder em set lúc tạo event:
+
+```python
+"overrides": [
+    {"method": "popup", "minutes": 1440},   # 1 day
+    {"method": "email", "minutes": 30},     # ← spam Gmail
+]
+```
+
+Bot Telegram đã có job nhắc 30p trước event qua chat → không cần Calendar gửi email trùng.
+
+**Fix**: thay `email` override bằng `popup` (chỉ Calendar app notification bell, không Gmail):
+
+```python
+"overrides": [
+    {"method": "popup", "minutes": 1440},   # 1 day
+    {"method": "popup", "minutes": 30},     # 30 minutes
+]
+```
+
+Áp dụng cho lịch MỚI tạo. Lịch cũ giữ email reminder cho đến khi chị edit/sync.
+
+### 26.7 Spec clarify reminder + digest (2/5)
+
+Chị Yến clarify spec rõ hơn:
+
+| Mode | Reminder 30p | Digest 7h sáng |
+|---|:-:|:-:|
+| Personal (chat 1-1 chị Yến) | ✅ | ✅ |
+| Group (team) | ✅ (mọi lịch trong group, không filter owner) | ❌ KHÔNG |
+| Lịch HY (personal) | ✅ với 🔗 Meet thay Zoom | ✅ icon 🔒 |
+
+Code hiện tại đã correct cho spec này:
+- `trigger_reminders.py` route theo `chat_mode`: group → GROUP_CHAT_ID, personal → OWNER_USER_ID
+- `trigger_digest.py` chỉ gửi vào `OWNER_USER_ID` (chị Yến) → không spam group
+- Format reminder cho HY (`provider='meet'`) hiển thị Meet link thay Zoom (Phase 7)
+
+### 26.8 Bug đang chờ fix (Phương án C)
+
+**Bug 1 — Reminder 30p Telegram KHÔNG fire** (cả personal + group):
+- Triệu chứng: chị Yến không nhận tin 30p trước event 9h sáng. DB `external_reminders_sent` 0 entries; `events.reminders_sent` toàn `[]`.
+- Root cause: GitHub Actions cron `*/5` private chỉ chạy 3-6 lần/ngày thay vì 288 lần.
+
+**Bug 2 — Digest 7h sáng → fire vào chiều**:
+- Triệu chứng: digest đến lúc 13-15h thay vì 7h sáng.
+- Root cause: cron `0 0 * * *` private delay 6-7h + Render Free sleep window 7-18h.
+
+**Phương án C** đã chốt: Convert repo public sau khi gitignore sensitive data. Code refactor commit `1437b58` đã ready, chờ chị Yến set Render env + OK convert.
+
+---
+
+*Cập nhật cuối: 2026-05-02 — sau hot-fixes 7 bug 29/4 → 2/5 + chuẩn bị convert repo public.*
