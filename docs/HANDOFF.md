@@ -90,17 +90,24 @@ Tin intro `message_id=465` em gửi vào group có link Drive `.docx`. Chị Y�
 
 ## 📋 Bug đã biết — chưa fix
 
-### Bug 1: Reminder 30p Telegram KHÔNG fire — EXPECTED FIXED (2026-05-02)
+### Bug 1: Reminder 30p Telegram KHÔNG fire — Phương án F applied (2026-05-02)
 
 **Triệu chứng cũ**: chị Yến phản ánh không nhận tin Telegram 30p trước event 9h sáng. DB `external_reminders_sent` 0 entries; `events.reminders_sent` toàn `[]`.
 
-**Root cause**: GitHub Actions cron `*/5` thực tế chỉ chạy 3-6 lần/ngày (jitter free tier private repo) → window 25-35p miss.
+**Root cause**: GitHub Actions cron `*/5` thực tế chỉ chạy 3-6 lần/ngày (jitter best-effort, kể cả public repo).
 
-**Fix**: Repo convert public (Phương án C, 2026-05-02). Cron public repo precision <1 phút thay vì 1-6h. **Cần monitor 1-2 ngày để confirm fix triệt để.**
+**Đã làm**:
+1. Convert repo public (commit `1437b58` + gh CLI)
+2. Sau verify vẫn jitter 2-6h → Phương án F (commit `d520a5b`):
+   - Cron `*/15` (was `*/5`) — ít runs → GitHub priority cao hơn → ổn định hơn
+   - Window ±10p (20-40p trước event, was ±5p = 25-35p)
+   - Trade-off: đôi khi nhắc 20p hoặc 40p trước thay vì đúng 30p, nhưng KHÔNG miss event
 
-→ Verify lần tới: kiểm tra `external_reminders_sent` + `events.reminders_sent` có entries cho lịch hôm sau không. Nếu vẫn rỗng → debug tiếp.
+**Cần monitor 1-2 ngày**: kiểm tra `external_reminders_sent` + `events.reminders_sent` có entries cho lịch hôm sau không.
 
-### Bug 2: Digest 7h sáng → fire vào chiều — EXPECTED FIXED (2026-05-02)
+**Long-term backup plan**: nếu Phương án F vẫn không reliable → Render Starter $7/m (~170k VND/tháng). Bot không sleep → internal scheduler chạy mỗi 60s precision.
+
+### Bug 2: Digest 7h sáng → fire vào chiều — Phương án F applied (2026-05-02)
 
 **Triệu chứng cũ**: chị nhận digest lúc 13-15h thay vì 7h sáng.
 
@@ -108,7 +115,7 @@ Tin intro `message_id=465` em gửi vào group có link Drive `.docx`. Chị Y�
 1. GitHub Actions cron `0 0 * * *` private delay 6-7h
 2. Render Free sleep — internal scheduler wake bất kỳ lúc nào trong window 7-18h
 
-**Fix**: Repo public → cron `0 0 * * *` precision tốt hơn. Render bot internal scheduler vẫn có thể wake muộn nhưng workflow public sẽ catch lúc 7h, set `last_digest_date` → bot internal skip → digest đến chị Yến lúc 7h.
+**Đã làm**: Repo public + giữ cron `0 0 * * *` (1 lần/ngày → priority cao). Workflow `daily-digest.yml` sẽ catch lúc gần 7h VN, set `last_digest_date` → bot internal skip → tránh duplicate.
 
 → Verify sáng mai (3/5): chị nhận digest ~7h sáng VN.
 
