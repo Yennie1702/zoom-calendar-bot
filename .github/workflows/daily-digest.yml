@@ -1,10 +1,17 @@
 name: Daily digest 7h sáng VN
 
-# 7:00 VN = 0:00 UTC. Ngoài cron schedule, có thể chạy thủ công qua workflow_dispatch
-# nếu muốn test fire ngoài giờ.
+# 7:00 VN = 0:00 UTC. Multi-cron strategy chống GitHub Actions jitter:
+# fire 4 lần/sáng (00:00, 00:30, 01:00, 02:00 UTC = 07:00, 07:30, 08:00, 09:00 VN).
+# Idempotent qua `bot_meta.last_digest_date` — lần đầu fire thành công sẽ
+# set meta, các lần sau skip.
+# Lý do: GitHub Actions cron free tier có jitter 1-6h, đôi khi 1 cron không
+# fire kịp → cần multi-cron để có ít nhất 1 lần fire trước 9h sáng VN.
 on:
   schedule:
-    - cron: "0 0 * * *"  # 00:00 UTC = 07:00 Asia/Ho_Chi_Minh
+    - cron: "0 0 * * *"   # 00:00 UTC = 07:00 VN
+    - cron: "30 0 * * *"  # 00:30 UTC = 07:30 VN
+    - cron: "0 1 * * *"   # 01:00 UTC = 08:00 VN
+    - cron: "0 2 * * *"   # 02:00 UTC = 09:00 VN
   workflow_dispatch:
 
 jobs:

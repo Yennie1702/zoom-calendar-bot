@@ -1,30 +1,61 @@
 # JA Scheduler Bot — Handoff cho session Claude tiếp theo
 
-*Cập nhật: 2026-05-02. Đọc file này đầu tiên khi mở session mới.*
+*Cập nhật: 2026-05-05 (chiều). Đọc file này đầu tiên khi mở session mới.*
 
 ---
 
-## 🎯 TL;DR — Trạng thái hiện tại (2026-05-02 cuối ngày)
+## 🚨 INCIDENT 2026-05-05 (chiều): Render service crashed
 
-Bot deployed Render Free, hoạt động 24/7. Phase 3 multi-user hoàn tất. **Repo đã public + env đã set đủ. Đang monitor reminder/digest timing fix.**
+**Triệu chứng**:
+- Chị Yến: "Không thấy digest, đã thấy nhắc lịch trước 30 phút. Chị set lịch mà nó không chạy luôn"
+- `/list`, `/tao` không phản hồi → bot Render unreachable
 
-**Latest commit**: pending push (HANDOFF update).
+**Root cause**:
+- Render service crashed/down sau commit `4a9a8a4` (Phương án F deploy 2026-05-04 12:17 VN)
+- Keep-alive workflow: 13:27 VN trả 404 (alive nhưng có gì đó lạ), 17:19 VN timeout (DOWN)
+- Webhook pending=0 (Telegram đã drop updates sau retries)
 
-**Đã làm xong** Phương án C:
+**Fix**: Chị Yến manual deploy qua Render dashboard 2026-05-05 ~17:25 VN → service alive lại.
+
+**Tại sao reminder 30p VẪN OK**: external GitHub Actions workflow (`reminders.yml`) chạy độc lập, không cần Render bot — nên nhắc 30p trước event vẫn fire đều.
+
+**Phát hiện về GitHub Actions cron jitter (Phương án F không đủ)**:
+- Phương án F dùng cron `*/15` kỳ vọng fire 96 lần/ngày
+- Thực tế logs hôm 4-5/5: fire chỉ 4-6 lần/ngày, gaps 4-5 tiếng
+- Public repo giúp 1 chút nhưng KHÔNG đủ cho `*/5` hay `*/15`
+- → Cần multi-cron times cho daily-digest (4 lần sáng) thay vì 1 cron đơn
+
+---
+
+## 🎯 TL;DR — Trạng thái hiện tại (2026-05-05)
+
+Bot deployed Render Free. Phase 3 multi-user hoàn tất. **Render đã alive lại sau incident chiều 5/5. Digest workflow upgrade multi-cron.**
+
+**Latest commit**: pending push (HANDOFF + multi-cron digest).
+
+**Đã làm xong** Phương án C + F:
 - ✅ Refactor `bot/users_config.py` load USERS từ env (commit `1437b58`)
 - ✅ Gitignore `data/members.json` (Turso production + local dev)
 - ✅ Render env `USERS_CONFIG_JSON` set xong — bot active với 3 users (Yến/Hương/Thuỳ)
 - ✅ Audit git history: clean (không có token leaked)
 - ✅ Convert repo public — `gh repo edit ... --visibility public`
+- ✅ Phương án F: cron `*/15` + window ±10p (commit `d520a5b`)
+- ✅ Daily digest multi-cron 4 times (07/07:30/08/09 VN) — commit pending
 
 **Spec reminder/digest cuối (clarify 2026-05-02 từ chị Yến)** — xem chi tiết Bug 3:
 - Personal chat 1-1: ✅ reminder 30p (bot + Calendar) + ✅ HY Meet + ✅ digest 7h sáng
 - Group team: ✅ reminder 30p (mọi lịch ai tạo cũng nhắc) — ❌ KHÔNG digest
 - Email reminder Gmail "Lịch Google: Thông báo..." → ĐÃ FIX commit `9cad917` (Calendar popup-only). Lịch cũ vẫn còn email 1 lần cuối.
 
-**Pending verify (1-2 ngày sau)**:
-- Reminder 30p có fire đúng không?
-- Digest 7h sáng có đến đúng giờ không?
+**Pending — long-term decision (chị Yến cần chọn)**:
+- **Recommend nhất**: Render Starter $7/tháng → bot không sleep → internal scheduler 100% reliable
+- Alternative: migrate digest sang Cloudflare Workers (free, fire chính xác)
+- Tạm thời: theo dõi multi-cron 1-2 ngày, nếu vẫn miss → upgrade
+
+**Pending verify (1-2 ngày sau Render redeploy)**:
+- Bot có lại process /tao, /list không (sau incident hôm 5/5)
+- Digest 7h sáng có đến đúng giờ không (multi-cron mới)
+- Render service stability — có crash lại không
 
 ```
 git log --oneline -10
