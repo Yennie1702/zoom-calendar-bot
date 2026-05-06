@@ -1,0 +1,36 @@
+name: One-shot fix Calendar reminders (popup-only)
+
+# Manual trigger only (workflow_dispatch). Chạy 1 lần để patch reminders
+# của tất cả active events → popup-only (không email).
+# Idempotent: chạy nhiều lần OK, chỉ overwrite reminder config.
+#
+# Usage: GitHub repo → Actions tab → chọn workflow này → "Run workflow".
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run fix script
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CALENDAR_ACCOUNT: ${{ secrets.GOOGLE_CALENDAR_ACCOUNT }}
+          GOOGLE_CALENDAR_PERSONAL_ID: ${{ secrets.GOOGLE_CALENDAR_PERSONAL_ID }}
+          GOOGLE_CALENDAR_TEAM_ID: ${{ secrets.GOOGLE_CALENDAR_TEAM_ID }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: python scripts/fix_calendar_reminders.py
