@@ -3432,13 +3432,36 @@ def _apply_edit(row: db.EventRow, field: str, new_value, *, notify: bool = True)
         )
         summary_update = f"[HY] {topic}" if field == "topic" else None
     else:
-        new_description = formatter.format_calendar_description(
-            cmd=cmd_like,
-            zoom_join_url=row.zoom_join_url,
-            zoom_meeting_id=int(row.zoom_meeting_id),
-            zoom_passcode=row.zoom_passcode,
+        # Phase 3 fix (2026-05-05): khi sửa lịch group, description PHẢI giữ
+        # đúng identity của người TẠO (creator) — không phải người đang sửa.
+        # Lookup creator_cfg từ row.created_by_user_id; nếu là lịch group + có
+        # creator_cfg → dùng template group (giữ nguyên tên/team/chữ ký creator).
+        # Fallback (lịch personal cũ trước Phase 3 hoặc creator không còn trong
+        # USERS): dùng template cũ với CONTACT_NAME default.
+        creator_cfg = (
+            get_user(row.created_by_user_id) if row.created_by_user_id else None
         )
-        summary_update = f"[John Academy] {topic}" if field == "topic" else None
+        is_group_event = (row.chat_mode or "personal") == "group"
+        if is_group_event and creator_cfg is not None:
+            new_description = formatter.format_group_calendar_description(
+                cmd=cmd_like,
+                zoom_join_url=row.zoom_join_url,
+                zoom_meeting_id=int(row.zoom_meeting_id),
+                zoom_passcode=row.zoom_passcode,
+                creator_display_name=creator_cfg.display_name,
+                creator_team=creator_cfg.team,
+                creator_signature=creator_cfg.signature,
+            )
+            title_prefix = creator_cfg.title_prefix
+        else:
+            new_description = formatter.format_calendar_description(
+                cmd=cmd_like,
+                zoom_join_url=row.zoom_join_url,
+                zoom_meeting_id=int(row.zoom_meeting_id),
+                zoom_passcode=row.zoom_passcode,
+            )
+            title_prefix = "[John Academy] "
+        summary_update = f"{title_prefix}{topic}" if field == "topic" else None
     _get_calendar().patch_event(
         row.calendar_event_id,
         calendar_id=_calendar_id_for_row(row),
