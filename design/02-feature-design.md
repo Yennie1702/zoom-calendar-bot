@@ -1827,4 +1827,124 @@ Code hiện tại đã correct cho spec này:
 
 ---
 
-*Cập nhật cuối: 2026-05-02 — sau hot-fixes 7 bug 29/4 → 2/5 + chuẩn bị convert repo public.*
+## 27. Hot-fixes + incidents 5/5 → 6/5
+
+Sau khi convert repo public + apply Phương án F (cron `*/15`), em phát hiện thêm 1 số vấn đề và fix tiếp:
+
+### 27.1 Incident — Render service crashed (5/5 chiều)
+
+**Triệu chứng**: Chị Yến báo "không thấy digest, set lịch không chạy". Reminder 30p VẪN OK.
+
+**Root cause**: Render service down (timeout >180s). Bot crashed/Render auto-shutdown đâu đó giữa 13:27 VN (Keep-alive trả 404 OK) và 17:19 VN (timeout). Có thể liên quan đến code path mới sau commit `4a9a8a4` (Phương án F deploy 4/5).
+
+**Tại sao reminder 30p VẪN OK**: external GitHub Actions workflow (`reminders.yml`) chạy độc lập, không cần Render bot — script `trigger_reminders.py` self-contained gọi Telegram API trực tiếp.
+
+**Fix**: Chị Yến manual deploy qua Render dashboard → service alive lại 17:25 VN.
+
+**Lesson**: Free tier KHÔNG self-heal khi crash. Cần monitoring + restart manual. Long-term recommend Render Starter $7/m.
+
+### 27.2 GitHub Actions cron jitter — Phương án F không đủ
+
+Sau Phương án F (cron `*/15`), thực tế logs hôm 4-5/5: workflow `reminders.yml` fire chỉ **4-6 lần/ngày** thay vì kỳ vọng 96 lần/ngày. Gaps 4-5 tiếng giữa mỗi run.
+
+→ Public repo cải thiện 1 chút nhưng KHÔNG đủ cho `*/5` hay `*/15` reliability. GitHub Actions free tier có hard floor priority cho scheduled workflows.
+
+**Fix tạm — Multi-cron daily digest** (commit `eccba65`):
+- Daily digest 1 cron → 4 crons: 00:00 / 00:30 / 01:00 / 02:00 UTC = **07:00 / 07:30 / 08:00 / 09:00 VN**
+- Idempotent qua `bot_meta.last_digest_date` — fire thành công lần đầu sẽ skip lần sau
+- Tăng xác suất ít nhất 1 cron fire kịp trong sáng (07-09 VN)
+
+**Long-term recommend**:
+1. **Render Starter $7/m** (đơn giản nhất) — bot không sleep → internal scheduler 100% reliable, không phải đối phó cron jitter
+2. Migrate cron sang Cloudflare Workers (free, fire chính xác đến giây)
+3. cron-job.org (free, REST endpoint)
+
+### 27.3 Bug — Edit lịch group → description bị ghi đè tên admin
+
+**Triệu chứng** (chị Yến báo 6/5): Hương tạo lịch JoyPub trong group → description Calendar đúng "Quỳnh Hương xin xác nhận lịch + chữ ký Quỳnh Hương". Nhưng khi Hương sửa lịch (đổi giờ/khách/...) → description **bị ghi đè bằng tên chị Yến** (CONTACT_NAME hardcoded).
+
+**Root cause**: `_apply_edit` trong handlers.py luôn gọi `format_calendar_description` (template cũ hardcode `config.CONTACT_NAME` = chị Yến) cho mọi non-personal event. Code lúc TẠO lịch đã branch theo mode dùng `format_group_calendar_description` với creator_cfg, nhưng code lúc SỬA chưa branch tương tự.
+
+**Fix** (commit `9c5cf38`):
+```python
+# bot/handlers.py _apply_edit
+creator_cfg = get_user(row.created_by_user_id) if row.created_by_user_id else None
+is_group_event = (row.chat_mode or "personal") == "group"
+if is_group_event and creator_cfg is not None:
+    new_description = formatter.format_group_calendar_description(
+        cmd=cmd_like,
+        zoom_join_url=row.zoom_join_url,
+        zoom_meeting_id=int(row.zoom_meeting_id),
+        zoom_passcode=row.zoom_passcode,
+        creator_display_name=creator_cfg.display_name,
+        creator_team=creator_cfg.team,
+        creator_signature=creator_cfg.signature,
+    )
+    title_prefix = creator_cfg.title_prefix
+else:
+    # Fallback: lịch personal cũ hoặc creator không còn trong USERS
+    new_description = formatter.format_calendar_description(...)
+    title_prefix = "[John Academy] "
+summary_update = f"{title_prefix}{topic}" if field == "topic" else None
+```
+
+Apply cho tất cả field edit: `time` / `dur` / `topic` / `ag` / `att_add` / `att_rm`. Title prefix cũng dynamic theo creator (vd "[John Academy] " vs "[HR JA] ").
+
+### 27.4 Bug — Email reminder Calendar (legacy events) tiếp tục spam Gmail
+
+**Triệu chứng** (chị Yến báo 6/5 13:30): nhận email "Lịch Google: Thông báo: [John Academy] SKR - Đào tạo Đội trưởng buổi 8" — 30p trước event 14:00.
+
+**Root cause**:
+- Commit `9cad917` (2/5) đã fix code create_event chỉ dùng popup reminder, KHÔNG email
+- Nhưng lịch tạo TRƯỚC commit này vẫn embed email reminder trong Calendar event
+- Google Calendar không tự re-apply default reminders retroactive
+- Recurring series (vd 8 buổi đào tạo) → mỗi instance vẫn fire email theo config gốc
+
+**Fix retroactive** (script `scripts/fix_calendar_reminders.py`):
+- Query DB → tất cả active events có `calendar_event_id`
+- Gọi `events.patch` với body `{"reminders": {"useDefault": False, "overrides": [{popup, 1440}, {popup, 30}]}}`
+- `sendUpdates="none"` để KHÔNG spam khách email "lịch đã update"
+- Idempotent — chạy nhiều lần OK
+
+**Run**:
+```bash
+.venv/bin/python3.14 scripts/fix_calendar_reminders.py
+```
+
+**Result 6/5 13:35**: 10/12 events fixed; 2 group events (id=36, id=27) skip vì local thiếu env `GOOGLE_CALENDAR_TEAM_ID`. Cần re-run trên Render hoặc set env local.
+
+**Lesson**: Khi đổi default reminder config, cần script retroactive fix luôn — không chỉ apply cho lịch mới. Lịch cũ giữ nguyên config gốc trừ khi explicit patch.
+
+---
+
+## 28. Roadmap — pending decisions (6/5)
+
+### 28.1 Long-term reliability (chị Yến cần chọn)
+
+| Option | Cost | Pros | Cons |
+|---|---|---|---|
+| **Render Starter** | $7/m | Bot không sleep → internal scheduler 100% reliable; không phải fix cron jitter | Tốn $84/năm |
+| Multi-cron daily digest | Free | Đã apply (commit `eccba65`); 4 lần fire sáng → có khả năng cao 1 lần kịp 7-9h | Không 100% guaranteed; reminder 30p vẫn jitter |
+| Cloudflare Workers cron | Free | Fire chính xác đến giây; 100k requests/day free | Cần migrate scripts; phức tạp setup hơn GH Actions |
+| cron-job.org | Free | REST endpoint, fire chính xác | External SaaS; cần manage API key + endpoint |
+
+**Recommend**: Render Starter $7/m — đơn giản nhất, fix cả digest + reminder + tránh crash.
+
+### 28.2 Pending features (Phase 4+)
+
+- Bulk operations (xoá nhiều lịch cùng lúc, export CSV)
+- Statistics command (`/stats` — số lịch tạo/tuần/tháng theo creator)
+- Auto-clean old events (lịch quá 90 ngày → archive)
+- Notification settings per user (mỗi member tự chọn nhận/không nhận reminder)
+
+### 28.3 Pending verify (1-2 ngày sau 6/5)
+
+- ✅ Edit lịch group description đúng creator (Hương test xong, chờ confirm chính thức)
+- 🔄 Daily digest 7-9h sáng có đến đúng giờ (multi-cron mới deploy 5/5)
+- 🔄 Email Gmail không còn spam (sau retroactive fix 6/5 13:35)
+- 🔄 Render service stability (sau crash 5/5)
+- 🔄 Group events id=36, id=27 cần re-run fix_calendar_reminders.py với CALENDAR_TEAM_ID
+
+---
+
+*Cập nhật cuối: 2026-05-06 — incident Render down 5/5 + email reminder retroactive fix + edit description fix Group mode.*
