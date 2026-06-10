@@ -118,6 +118,70 @@ def _list_cmd_for(ctx_chat_data: dict | None = None,
     return "/mylist" if mode == "group" else "/list"
 
 
+def _is_bot_addressed(update: Update, ctx) -> bool:
+    """Phase 3.x (2026-05-06): true khi tin nhắn group nhắm trực tiếp tới bot.
+
+    Detect 1 trong 3 case:
+    1. Reply vào message của bot (reply_to_message.from_user == bot)
+    2. Mention @BotUsername trong text (entity type='mention')
+    3. Text mention bot (entity type='text_mention' với user.id = bot)
+
+    Dùng trong group để filter chat phiếm vs lệnh dành cho bot.
+    """
+    msg = update.message
+    if msg is None:
+        return False
+    bot_username = getattr(ctx.bot, "username", "") or ""
+    bot_id = getattr(ctx.bot, "id", None)
+
+    # 1) Reply to bot's own message
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        if msg.reply_to_message.from_user.id == bot_id:
+            return True
+
+    # 2) Bot mentioned in entities
+    entities = msg.entities or []
+    text = msg.text or ""
+    for ent in entities:
+        if ent.type == "mention" and bot_username:
+            mentioned = text[ent.offset:ent.offset + ent.length]
+            if mentioned.lstrip("@").lower() == bot_username.lower():
+                return True
+        elif ent.type == "text_mention" and ent.user is not None:
+            if ent.user.id == bot_id:
+                return True
+    return False
+
+
+# Pending state keys — dùng để check "có đang chờ chị làm gì không" trong group
+_PENDING_STATE_KEYS = (
+    "pending", "pending_edit", "pending_delete", "pending_sync",
+    "edit_mode", "occurrences",
+    "pending_quick_disambig", "pending_clone_disambig",
+    "ext_edit_mode", "pending_ext_edit", "dir_mode",
+)
+
+
+def _has_pending_state(chat_data) -> bool:
+    return any(k in chat_data for k in _PENDING_STATE_KEYS)
+
+
+_GROUP_MENTION_HELP = (
+    "👋 Em là *JA Scheduler* — bot đặt lịch họp Zoom + Google Calendar.\n\n"
+    "Trong group này, em chỉ reply khi:\n"
+    "• Có người tạo lịch mới (gõ `Tạo lịch ...`)\n"
+    "• Hoặc tag em (@JA_Scheduler_bot) — sẽ thấy tin này\n\n"
+    "*Cách tạo lịch:*\n"
+    "```\n"
+    "Tạo lịch [chủ đề]\n"
+    "- Lúc: [thời gian, vd 14:00 thứ 4 tuần sau]\n"
+    "- Thời lượng: [vd 60p]\n"
+    "- Khách: [email/tên cách nhau dấu phẩy]\n"
+    "```\n\n"
+    "Lệnh khác: /mylist (lịch của em), /sync (đồng bộ Calendar), /help (đầy đủ)."
+)
+
+
 async def _gate(
     update: Update, command: str, *, silent_reject: bool = False,
 ) -> RequestContext | None:
@@ -1628,20 +1692,24 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
     low = text.strip().lower()
 
+    # Phase 3.x (2026-05-06): Group silent mode — trong group, em chỉ reply khi
+    # có lý do rõ ràng (lệnh tạo lịch, đang ở pending state, hoặc bị tag).
+    # Chat phiếm khác trong group → silent return (không spam).
+    # Cá nhân 1-1 vẫn reply mọi text như cũ.
+    is_group = req.mode == "group"
+    bot_addressed = _is_bot_addressed(update, ctx) if is_group else True
+    had_pending = _has_pending_state(ctx.chat_data)
+
     # 0) Escape hatch: "huỷ" / "hủy" / "bỏ" / "cancel" clears any pending state.
     if low in {"huỷ", "hủy", "bỏ", "bo", "huy", "cancel", "/cancel"}:
-        had = any(k in ctx.chat_data for k in
-                  ("pending", "pending_edit", "pending_delete", "pending_sync",
-                   "edit_mode", "pending_quick_disambig",
-                   "pending_clone_disambig",
-                   "ext_edit_mode", "pending_ext_edit", "dir_mode"))
-        for k in ("pending", "pending_edit", "pending_delete",
-                  "pending_sync", "edit_mode", "occurrences",
-                  "pending_quick_disambig", "pending_clone_disambig",
-                  "ext_edit_mode", "pending_ext_edit", "dir_mode"):
+        for k in _PENDING_STATE_KEYS:
             ctx.chat_data.pop(k, None)
+        # Group + không có pending + không tag bot → silent (tránh spam khi
+        # ai đó tình cờ gõ "huỷ" trong cuộc trò chuyện khác).
+        if is_group and not had_pending and not bot_addressed:
+            return
         await update.message.reply_text(
-            "✅ Đã huỷ trạng thái chờ." if had else "ℹ️ Không có gì đang chờ."
+            "✅ Đã huỷ trạng thái chờ." if had_pending else "ℹ️ Không có gì đang chờ."
         )
         return
 
@@ -1660,6 +1728,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         quick = parse_quick_edit(text)
     except ParseError as e:
+        # Group + không tag bot + không có pending → có thể chỉ là text trùng
+        # pattern quick-edit nhưng không phải lệnh thật → silent.
+        if is_group and not bot_addressed and not had_pending:
+            return
         await update.message.reply_text(f"⚠️ {e}")
         return
     if quick is not None:
@@ -1680,6 +1752,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         clone = parse_clone(text)
     except ParseError as e:
+        if is_group and not bot_addressed and not had_pending:
+            return  # silent — tránh spam
         await update.message.reply_text(f"⚠️ {e}")
         return
     if clone is not None:
@@ -1698,7 +1772,21 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     low_txt = text.lower()
     is_hy = is_personal_prefix(text)
-    if "tạo lịch" not in low_txt and "tao lich" not in low_txt and not is_hy:
+    is_create_attempt = (
+        "tạo lịch" in low_txt or "tao lich" in low_txt or is_hy
+    )
+    if not is_create_attempt:
+        # Group: chat phiếm — silent. Trừ khi bị tag bot trực tiếp → reply
+        # hướng dẫn tóm tắt để hỗ trợ thành viên mới.
+        if is_group:
+            if bot_addressed:
+                await update.message.reply_text(
+                    _GROUP_MENTION_HELP,
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_web_page_preview=True,
+                )
+            return
+        # Cá nhân 1-1: vẫn reply hint như cũ
         await update.message.reply_text(
             f"Em chưa hiểu. Gõ /help để xem ví dụ hoặc {_list_cmd_for(ctx.chat_data)} để quản lý lịch cũ."
         )
