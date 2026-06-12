@@ -1773,13 +1773,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     low_txt = text.lower()
     is_hy = is_personal_prefix(text)
-    # "tạo lịch" trong text CHƯA chắc là lệnh tạo lịch — có thể chỉ là câu
-    # hỏi "tạo lịch như nào?". Lệnh thật BUỘC phải có ít nhất 1 dòng bullet
-    # field (vd "- Lúc:", "- Khách:"). Nếu thiếu → coi như câu hỏi / chat,
-    # rơi vào branch silent/help bên dưới.
     has_create_kw = "tạo lịch" in low_txt or "tao lich" in low_txt
-    has_field_bullet = bool(re.search(r"(^|\n)\s*-\s*\S", text))
-    is_create_attempt = is_hy or (has_create_kw and has_field_bullet)
+    # Rule bullet-required CHỈ áp dụng trong GROUP để lọc câu hỏi "tạo lịch
+    # như nào?" khỏi lệnh thật. Trong chat 1-1 vẫn dùng rule cũ (cứ có
+    # "tạo lịch" → vào parse_command, chị Yến sẽ thấy error explicit
+    # "⚠️ Em chưa thấy dòng - Thời gian:..." — UX rõ hơn "Em chưa hiểu").
+    if is_group:
+        has_field_bullet = bool(re.search(r"(^|\n)\s*-\s*\S", text))
+        is_create_attempt = is_hy or (has_create_kw and has_field_bullet)
+    else:
+        is_create_attempt = is_hy or has_create_kw
     if not is_create_attempt:
         # Group: chat phiếm — silent. Trừ khi bị tag bot trực tiếp → reply
         # hướng dẫn tóm tắt để hỗ trợ thành viên mới.
